@@ -36,6 +36,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/personality.h>
+#include <sys/prctl.h>
 #include <sys/random.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -93,6 +94,7 @@ run(int argc, char *argv[], char *envp[])
 	if (sysroot_open() || syscall_handler_install()) {
 		goto error;
 	}
+	prctl(PR_SET_NAME, basename(argv[1]));
 
 	/* Map the shared cache into our memory space, persisted across fork()
 	 */

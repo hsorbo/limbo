@@ -150,6 +150,9 @@ static int fpathconf_value(int fd, int name);
 static struct timeval *convert_timevals(
 		const void *tptr, struct timeval *times);
 static unsigned int rename_flags(uint32_t flags);
+static int rlimit_resource(uint32_t which);
+static uint64_t rlimit_to_darwin(rlim_t value);
+static rlim_t rlimit_from_darwin(uint64_t value);
 
 int
 sys_open(user_addr_t path, int flags, int mode)
@@ -1210,7 +1213,16 @@ sys_gethostuuid(unsigned char *uuid_buf, void *timeoutp)
 	fprintf(stderr, "gethostuuid(%p, %p)\n", (void *)uuid_buf,
 			(void *)timeoutp);
 #endif
-	unimplemented();
+	FILE *machine_id = fopen("/etc/machine-id", "r");
+	if (machine_id == NULL) {
+		return err_map(errno);
+	}
+	int count = 0;
+	for (int i = 0; i < 16; i++) {
+		count += fscanf(machine_id, "%2hhx", &uuid_buf[i]);
+	}
+	fclose(machine_id);
+	return (count == 16) ? 0 : _EIO;
 }
 
 int
@@ -1504,8 +1516,54 @@ sys_getrlimit(uint32_t which, void *rlp)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "getrlimit(%p, %p)\n", (void *)which, (void *)rlp);
 #endif
-	/* TODO: Implement */
-	return err_map(EINVAL);
+	int resource = rlimit_resource(which);
+	if (resource == -1) {
+		return _EINVAL;
+	}
+
+	struct rlimit limit;
+	if (getrlimit(resource, &limit) == -1) {
+		return err_map(errno);
+	}
+	uint64_t *darwin_limit = rlp;
+	darwin_limit[0] = rlimit_to_darwin(limit.rlim_cur);
+	darwin_limit[1] = rlimit_to_darwin(limit.rlim_max);
+	return 0;
+}
+
+#define _RLIMIT_POSIX_FLAG 0x1000
+#define _RLIM_INFINITY     0x7fffffffffffffffULL
+
+static int
+rlimit_resource(uint32_t which)
+{
+	static const int resources[] = {
+			RLIMIT_CPU,
+			RLIMIT_FSIZE,
+			RLIMIT_DATA,
+			RLIMIT_STACK,
+			RLIMIT_CORE,
+			RLIMIT_AS,
+			RLIMIT_MEMLOCK,
+			RLIMIT_NPROC,
+			RLIMIT_NOFILE,
+	};
+	which &= ~_RLIMIT_POSIX_FLAG;
+	return (which < sizeof(resources) / sizeof(resources[0]))
+			? resources[which]
+			: -1;
+}
+
+static uint64_t
+rlimit_to_darwin(rlim_t value)
+{
+	return (value == RLIM_INFINITY) ? _RLIM_INFINITY : value;
+}
+
+static rlim_t
+rlimit_from_darwin(uint64_t value)
+{
+	return (value >= _RLIM_INFINITY) ? RLIM_INFINITY : value;
 }
 
 int
@@ -1514,7 +1572,17 @@ sys_setrlimit(uint32_t which, void *rlp)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "setrlimit(%p, %p)\n", (void *)which, (void *)rlp);
 #endif
-	unimplemented();
+	int resource = rlimit_resource(which);
+	if (resource == -1) {
+		return _EINVAL;
+	}
+
+	const uint64_t *darwin_limit = rlp;
+	struct rlimit limit = {
+			.rlim_cur = rlimit_from_darwin(darwin_limit[0]),
+			.rlim_max = rlimit_from_darwin(darwin_limit[1]),
+	};
+	return errno_map(setrlimit(resource, &limit));
 }
 
 user_addr_t
@@ -2375,20 +2443,6 @@ sys___semwait_signal(int cond_sem, int mutex_sem, int timeout, int relative,
 	default:
 		return _EINVAL;
 	}
-}
-
-int
-sys_proc_info(int32_t callnum, int32_t pid, uint32_t flavor, uint64_t arg,
-		user_addr_t buffer, int32_t buffersize)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "proc_info(%p, %p, %p, %p, %p, %p)\n", (void *)callnum,
-			(void *)pid, (void *)flavor, (void *)arg,
-			(void *)buffer, (void *)buffersize);
-#endif
-	/* TODO: Implement */
-	memset(buffer, 0, buffersize);
-	return buffersize;
 }
 
 int

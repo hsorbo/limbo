@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -25,226 +26,184 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <mach-o/fat.h>
-#include <mach-o/loader.h>
-#include <mach/i386/thread_status.h>
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <mach/mach.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
-typedef void *user_addr_t;
+#include "handler.h"
+#include "process.h"
+#include "xnu-errno.h"
 
-/* TODO: This really shouldn't be here */
-struct __darwin_timeval {
-	time_t tv_sec;
-	suseconds_t tv_usec;
+#define CTL_UNSPEC 0
+#define CTL_KERN   1
+#define CTL_HW     6
+
+#define CTL_SYSCTL_NAME2OID 3
+
+#define KERN_OSTYPE     1
+#define KERN_OSRELEASE  2
+#define KERN_OSREV      3
+#define KERN_VERSION    4
+#define KERN_ARGMAX     8
+#define KERN_SECURELVL  9
+#define KERN_HOSTNAME   10
+#define KERN_PROC       14
+#define KERN_BOOTTIME   21
+#define KERN_USRSTACK64 59
+#define KERN_OSVERSION  65
+
+#define KERN_PROC_PID 1
+
+#define SRUN   2
+#define P_LP64 0x4
+#define NODEV  -1
+
+#define HW_MACHINE   1
+#define HW_MODEL     2
+#define HW_NCPU      3
+#define HW_BYTEORDER 4
+#define HW_PAGESIZE  7
+#define HW_MEMSIZE   24
+#define HW_AVAILCPU  25
+
+#define SYSCTL_AUTO_OID 1000
+
+typedef enum {
+	SYSCTL_STRING,
+	SYSCTL_INT,
+	SYSCTL_QUAD,
+	SYSCTL_READER,
+} sysctl_kind_t;
+
+typedef int (*sysctl_reader_t)(void *old, size_t *oldlenp);
+
+struct sysctl_node {
+	const char *name;
+	int oid[2];
+	sysctl_kind_t kind;
+	union {
+		const char *string;
+		int64_t number;
+		sysctl_reader_t reader;
+	};
 };
 
-#define CTL_UNSPEC  0
-#define CTL_KERN    1
-#define CTL_VM      2
-#define CTL_VFS     3
-#define CTL_NET     4
-#define CTL_DEBUG   5
-#define CTL_HW      6
-#define CTL_MACHDEP 7
-#define CTL_USER    8
-#define CTL_MAXID   9
+struct __darwin_timeval {
+	int64_t tv_sec;
+	int32_t tv_usec;
+};
 
-#define KERN_OSTYPE             1
-#define KERN_OSRELEASE          2
-#define KERN_OSREV              3
-#define KERN_VERSION            4
-#define KERN_MAXVNODES          5
-#define KERN_MAXPROC            6
-#define KERN_MAXFILES           7
-#define KERN_ARGMAX             8
-#define KERN_SECURELVL          9
-#define KERN_HOSTNAME           10
-#define KERN_HOSTID             11
-#define KERN_CLOCKRATE          12
-#define KERN_VNODE              13
-#define KERN_PROC               14
-#define KERN_FILE               15
-#define KERN_PROF               16
-#define KERN_POSIX1             17
-#define KERN_NGROUPS            18
-#define KERN_JOB_CONTROL        19
-#define KERN_SAVED_IDS          20
-#define KERN_BOOTTIME           21
-#define KERN_NISDOMAINNAME      22
-#define KERN_DOMAINNAME         KERN_NISDOMAINNAME
-#define KERN_MAXPARTITIONS      23
-#define KERN_KDEBUG             24
-#define KERN_UPDATEINTERVAL     25
-#define KERN_OSRELDATE          26
-#define KERN_NTP_PLL            27
-#define KERN_BOOTFILE           28
-#define KERN_MAXFILESPERPROC    29
-#define KERN_MAXPROCPERUID      30
-#define KERN_DUMPDEV            31
-#define KERN_IPC                32
-#define KERN_DUMMY              33
-#define KERN_PS_STRINGS         34
-#define KERN_USRSTACK32         35
-#define KERN_LOGSIGEXIT         36
-#define KERN_SYMFILE            37
-#define KERN_PROCARGS           38
-#define KERN_NETBOOT            40
-#define KERN_SYSV               42
-#define KERN_AFFINITY           43
-#define KERN_TRANSLATE          44
-#define KERN_CLASSIC            KERN_TRANSLATE
-#define KERN_EXEC               45
-#define KERN_CLASSICHANDLER     KERN_EXEC
-#define KERN_AIOMAX             46
-#define KERN_AIOPROCMAX         47
-#define KERN_AIOTHREADS         48
-#define KERN_PROCARGS2          49
-#define KERN_COREFILE           50
-#define KERN_COREDUMP           51
-#define KERN_SUGID_COREDUMP     52
-#define KERN_PROCDELAYTERM      53
-#define KERN_SHREG_PRIVATIZABLE 54
-#define KERN_LOW_PRI_WINDOW     56
-#define KERN_LOW_PRI_DELAY      57
-#define KERN_POSIX              58
-#define KERN_USRSTACK64         59
-#define KERN_NX_PROTECTION      60
-#define KERN_TFP                61
-#define KERN_PROCNAME           62
-#define KERN_THALTSTACK         63
-#define KERN_SPECULATIVE_READS  64
-#define KERN_OSVERSION          65
-#define KERN_SAFEBOOT           66
-#define KERN_RAGEVNODE          68
-#define KERN_TTY                69
-#define KERN_CHECKOPENEVT       70
-#define KERN_THREADNAME         71
-#define KERN_MAXID              72
+struct __darwin_kinfo_proc {
+	struct __darwin_timeval p_starttime;
+	uint8_t reserved1[16];
+	int32_t p_flag;
+	char p_stat;
+	uint8_t reserved2[3];
+	int32_t p_pid;
+	int32_t p_oppid;
+	uint8_t reserved3[194];
+	char p_nice;
+	char p_comm[17];
+	uint8_t reserved4[132];
+	uint32_t p_ruid;
+	uint32_t p_svuid;
+	uint32_t p_rgid;
+	uint32_t p_svgid;
+	uint8_t reserved5[12];
+	uint32_t cr_uid;
+	int16_t cr_ngroups;
+	uint8_t reserved6[2];
+	uint32_t cr_groups[16];
+	uint8_t reserved7[68];
+	int32_t e_ppid;
+	int32_t e_pgid;
+	uint8_t reserved8[4];
+	int32_t e_tdev;
+	int32_t e_tpgid;
+	uint8_t reserved9[68];
+};
 
-#define KERN_PROC_ALL     0
-#define KERN_PROC_PID     1
-#define KERN_PROC_PGRP    2
-#define KERN_PROC_SESSION 3
-#define KERN_PROC_TTY     4
-#define KERN_PROC_UID     5
-#define KERN_PROC_RUID    6
-#define KERN_PROC_LCID    7
+static int read_hostname(void *old, size_t *oldlenp);
+static int read_boottime(void *old, size_t *oldlenp);
+static int read_ncpu(void *old, size_t *oldlenp);
+static int read_memsize(void *old, size_t *oldlenp);
 
-static int
-sysctl_kern1(int code, void *old, size_t *oldlenp)
-{
-	switch (code) {
-	case KERN_OSTYPE:
-		*(void **)old = "Darwin";
-		*oldlenp = sizeof("Darwin");
-		break;
-	case KERN_OSRELEASE:
-		*(void **)old = "20.3.0";
-		*oldlenp = sizeof("20.3.0");
-		break;
-	case KERN_VERSION:
-		*(void **)old = "Darwin Kernel Version 20.3.0: Thu Jan 21 "
-				"00:06:51 PST 2021; "
-				"root:xnu-7195.81.3~1/RELEASE_ARM64_T8101";
-		*oldlenp = sizeof("Darwin Kernel Version 20.3.0: Thu Jan 21 "
-				  "00:06:51 PST 2021; "
-				  "root:xnu-7195.81.3~1/RELEASE_ARM64_T8101");
-		break;
-	case KERN_USRSTACK64:
-		*(void **)old = VM_USRSTACK64;
-		*oldlenp = sizeof(void *);
-		break;
-	case KERN_OSVERSION:
-		*(void **)old = "20D91";
-		*oldlenp = sizeof("20D91");
-		break;
-	case KERN_HOSTNAME:
-		/* TODO: gethostname(2) */
-		*(void **)old = "linux";
-		*oldlenp = sizeof("linux");
-		break;
-	case KERN_ARGMAX:
-		*(int *)old = 0x100000;
-		*oldlenp = sizeof(int);
-		break;
-	case KERN_BOOTTIME: {
-		struct __darwin_timeval *tv = (struct __darwin_timeval *)old;
-		tv->tv_sec = 0;
-		tv->tv_usec = 0;
-		*oldlenp = sizeof(struct __darwin_timeval);
-	} break;
-	case KERN_SECURELVL:
-		*(int *)old = 0;
-		*oldlenp = sizeof(int);
-		break;
-	default:
-#ifdef ENABLE_STRACE
-		fprintf(stderr, ">> Missing sysctl kern.*: %d\n", code);
-#endif
-		unimplemented();
-	}
+static const struct sysctl_node nodes[] = {
+		{"kern.ostype", {CTL_KERN, KERN_OSTYPE}, SYSCTL_STRING,
+				.string = "Darwin"},
+		{"kern.osrelease", {CTL_KERN, KERN_OSRELEASE}, SYSCTL_STRING,
+				.string = "27.0.0"},
+		{"kern.osrevision", {CTL_KERN, KERN_OSREV}, SYSCTL_INT,
+				.number = 199506},
+		{"kern.version", {CTL_KERN, KERN_VERSION}, SYSCTL_STRING,
+				.string
+				= "Darwin Kernel Version 27.0.0: Tue Aug 11 "
+				  "21:02:59 PDT 2026; "
+				  "root:xnu-13432.1.9~1/RELEASE_X86_64"},
+		{"kern.argmax", {CTL_KERN, KERN_ARGMAX}, SYSCTL_INT,
+				.number = 1048576},
+		{"kern.securelevel", {CTL_KERN, KERN_SECURELVL}, SYSCTL_INT,
+				.number = 0},
+		{"kern.hostname", {CTL_KERN, KERN_HOSTNAME}, SYSCTL_READER,
+				.reader = read_hostname},
+		{"kern.boottime", {CTL_KERN, KERN_BOOTTIME}, SYSCTL_READER,
+				.reader = read_boottime},
+		{"kern.usrstack64", {CTL_KERN, KERN_USRSTACK64}, SYSCTL_QUAD,
+				.number = (int64_t)VM_USRSTACK64},
+		{"kern.osversion", {CTL_KERN, KERN_OSVERSION}, SYSCTL_STRING,
+				.string = "26A428"},
+		{"kern.bootargs", {0, 0}, SYSCTL_STRING, .string = ""},
+		{"kern.osproductversion", {0, 0}, SYSCTL_STRING,
+				.string = "27.0"},
+		{"kern.secure_kernel", {0, 0}, SYSCTL_INT, .number = 0},
+		{"hw.machine", {CTL_HW, HW_MACHINE}, SYSCTL_STRING,
+				.string = "x86_64"},
+		{"hw.model", {CTL_HW, HW_MODEL}, SYSCTL_STRING,
+				.string = "MacPro7,1"},
+		{"hw.ncpu", {CTL_HW, HW_NCPU}, SYSCTL_READER,
+				.reader = read_ncpu},
+		{"hw.byteorder", {CTL_HW, HW_BYTEORDER}, SYSCTL_INT,
+				.number = 1234},
+		{"hw.pagesize", {CTL_HW, HW_PAGESIZE}, SYSCTL_QUAD,
+				.number = PAGE_SIZE},
+		{"hw.memsize", {CTL_HW, HW_MEMSIZE}, SYSCTL_READER,
+				.reader = read_memsize},
+		{"hw.availcpu", {CTL_HW, HW_AVAILCPU}, SYSCTL_READER,
+				.reader = read_ncpu},
+		{"hw.activecpu", {0, 0}, SYSCTL_READER, .reader = read_ncpu},
+		{"hw.logicalcpu", {0, 0}, SYSCTL_READER, .reader = read_ncpu},
+		{"hw.logicalcpu_max", {0, 0}, SYSCTL_READER,
+				.reader = read_ncpu},
+		{"hw.physicalcpu", {0, 0}, SYSCTL_READER, .reader = read_ncpu},
+		{"hw.physicalcpu_max", {0, 0}, SYSCTL_READER,
+				.reader = read_ncpu},
+		{"hw.cachelinesize", {0, 0}, SYSCTL_QUAD, .number = 64},
+		{"hw.cputype", {0, 0}, SYSCTL_INT, .number = CPU_TYPE_X86_64},
+		{"hw.cpusubtype", {0, 0}, SYSCTL_INT,
+				.number = CPU_SUBTYPE_X86_64_ALL},
+		{"hw.cpu64bit_capable", {0, 0}, SYSCTL_INT, .number = 1},
+		{"security.mac.lockdown_mode_state", {0, 0}, SYSCTL_INT,
+				.number = 0},
+};
 
-	return 0;
-}
-
-#define HW_MACHINE      1
-#define HW_MODEL        2
-#define HW_NCPU         3
-#define HW_BYTEORDER    4
-#define HW_PHYSMEM      5
-#define HW_USERMEM      6
-#define HW_PAGESIZE     7
-#define HW_DISKNAMES    8
-#define HW_DISKSTATS    9
-#define HW_EPOCH        10
-#define HW_FLOATINGPT   11
-#define HW_MACHINE_ARCH 12
-#define HW_VECTORUNIT   13
-#define HW_BUS_FREQ     14
-#define HW_CPU_FREQ     15
-#define HW_CACHELINE    16
-#define HW_L1ICACHESIZE 17
-#define HW_L1DCACHESIZE 18
-#define HW_L2SETTINGS   19
-#define HW_L2CACHESIZE  20
-#define HW_L3SETTINGS   21
-#define HW_L3CACHESIZE  22
-#define HW_TB_FREQ      23
-#define HW_MEMSIZE      24
-#define HW_AVAILCPU     25
-#define HW_TARGET       26
-#define HW_PRODUCT      27
-#define HW_MAXID        28
-
-static int
-sysctl_hw1(int code, void *old, size_t *oldlenp)
-{
-	switch (code) {
-	case HW_PAGESIZE:
-		*(int *)old = 0x1000;
-		*oldlenp = sizeof(int);
-		break;
-	case HW_MACHINE:
-		*(void **)old = "x86_64";
-		*oldlenp = sizeof("x86_64");
-		break;
-	case HW_NCPU:
-		*(int *)old = 12;
-		*oldlenp = sizeof(int);
-		break;
-	default:
-#ifdef ENABLE_STRACE
-		fprintf(stderr, ">> Missing sysctl hw.*: %d\n", code);
-#endif
-		unimplemented();
-	}
-
-	return 0;
-}
+static int read_kinfo_proc(int32_t pid, void *old, size_t *oldlenp);
+static const struct sysctl_node *lookup_oid(const int *name, uint32_t namelen);
+static int name2oid(
+		const char *name, size_t namelen, void *old, size_t *oldlenp);
+static const struct sysctl_node *lookup_name(const char *name, size_t namelen);
+static void node_oid(const struct sysctl_node *node, int oid[2]);
+static int read_node(
+		const struct sysctl_node *node, void *old, size_t *oldlenp);
+static int read_bytes(
+		const void *value, size_t size, void *old, size_t *oldlenp);
+static int read_number(int64_t value, size_t size, void *old, size_t *oldlenp);
 
 int
 sys_sysctl(int *name, uint32_t namelen, void *old, size_t *oldlenp, void *new,
@@ -255,48 +214,96 @@ sys_sysctl(int *name, uint32_t namelen, void *old, size_t *oldlenp, void *new,
 			(void *)namelen, (void *)old, (void *)oldlenp,
 			(void *)new, (void *)newlen);
 #endif
-	/* TODO: For now, you may not set anything */
+	if (namelen == 2 && name[0] == CTL_UNSPEC
+			&& name[1] == CTL_SYSCTL_NAME2OID) {
+		return name2oid(new, newlen, old, oldlenp);
+	}
+
 	if (new != NULL) {
 		unimplemented();
 	}
 
-	if (namelen == 2) {
-		int group = name[0];
-		int specific = name[1];
-
-		switch (group) {
-		case CTL_KERN:
-			return sysctl_kern1(specific, old, oldlenp);
-		case CTL_HW:
-			return sysctl_hw1(specific, old, oldlenp);
-		default:
-#ifdef ENABLE_STRACE
-			fprintf(stderr, ">> Missing sysctl group: %d\n", group);
-#endif
-			unimplemented();
-		}
-	} else if (namelen == 4) {
-		int group = name[0];
-		int type = name[1];
-		int subtype = name[2];
-		int unk = name[3];
-
-		if (group == CTL_KERN && type == KERN_PROC
-				&& subtype == KERN_PROC_PID) {
-			/* TODO: Implement */
-			(void)unk;
-			return 0;
-		}
-
-#ifdef ENABLE_STRACE
-		fprintf(stderr,
-				">> Missing sysctl: group: %d, type: %d, "
-				"subtype: %d\n",
-				group, type, subtype);
-#endif
+	if (namelen == 4 && name[0] == CTL_KERN && name[1] == KERN_PROC
+			&& name[2] == KERN_PROC_PID) {
+		return read_kinfo_proc(name[3], old, oldlenp);
 	}
 
-	unimplemented();
+	const struct sysctl_node *node = lookup_oid(name, namelen);
+	if (node == NULL) {
+#ifdef ENABLE_STRACE
+		fprintf(stderr, ">> Unknown sysctl:");
+		for (uint32_t i = 0; i < namelen; i++) {
+			fprintf(stderr, " %d", name[i]);
+		}
+		fprintf(stderr, "\n");
+#endif
+		return _ENOENT;
+	}
+	return read_node(node, old, oldlenp);
+}
+
+static int
+read_kinfo_proc(int32_t pid, void *old, size_t *oldlenp)
+{
+	struct process process;
+	if (process_lookup(pid, &process)) {
+		*oldlenp = 0;
+		return 0;
+	}
+
+	struct __darwin_kinfo_proc info = {
+			.p_flag = P_LP64,
+			.p_stat = SRUN,
+			.p_pid = process.pid,
+			.p_nice = process.nice,
+			.p_ruid = process.uid[0],
+			.p_svuid = process.uid[2],
+			.p_rgid = process.gid[0],
+			.p_svgid = process.gid[2],
+			.cr_uid = process.uid[1],
+			.cr_ngroups = 1,
+			.cr_groups = {process.gid[1]},
+			.e_ppid = process.ppid,
+			.e_pgid = process.pgid,
+			.e_tdev = NODEV,
+			.e_tpgid = process.tpgid,
+	};
+	uint64_t sec, usec;
+	process_start_time(&process, &sec, &usec);
+	info.p_starttime.tv_sec = sec;
+	info.p_starttime.tv_usec = usec;
+	memcpy(info.p_comm, process.comm, sizeof(process.comm));
+	return read_bytes(&info, sizeof(info), old, oldlenp);
+}
+
+static const struct sysctl_node *
+lookup_oid(const int *name, uint32_t namelen)
+{
+	if (namelen != 2) {
+		return NULL;
+	}
+
+	for (uint32_t i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
+		int oid[2];
+		node_oid(&nodes[i], oid);
+		if (oid[0] == name[0] && oid[1] == name[1]) {
+			return &nodes[i];
+		}
+	}
+	return NULL;
+}
+
+static int
+name2oid(const char *name, size_t namelen, void *old, size_t *oldlenp)
+{
+	const struct sysctl_node *node = lookup_name(name, namelen);
+	if (node == NULL) {
+		return _ENOENT;
+	}
+
+	int oid[2];
+	node_oid(node, oid);
+	return read_bytes(oid, sizeof(oid), old, oldlenp);
 }
 
 int
@@ -304,17 +311,134 @@ sys_sys_sysctlbyname(const char *name, size_t namelen, void *old,
 		size_t *oldlenp, void *new, size_t newlen)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "sys_sysctlbyname(\"%s\", %p, %p, %p, %p, %p)\n", name,
-			(void *)namelen, (void *)old, (void *)oldlenp,
-			(void *)new, (void *)newlen);
+	fprintf(stderr, "sysctlbyname(\"%.*s\", %p, %p, %p, %p, %p)\n",
+			(int)namelen, name, (void *)namelen, (void *)old,
+			(void *)oldlenp, (void *)new, (void *)newlen);
 #endif
-	if (strncmp(name, "kern.boottime", namelen) == 0) {
-		return sysctl_kern1(KERN_BOOTTIME, old, oldlenp);
-	} else if (strncmp(name, "kern.secure_kernel", namelen) == 0) {
-		return sysctl_kern1(KERN_SECURELVL, old, oldlenp);
-	} else if (strncmp(name, "hw.physicalcpu", namelen) == 0) {
-		return sysctl_hw1(HW_NCPU, old, oldlenp);
+	if (new != NULL) {
+		unimplemented();
 	}
 
+	const struct sysctl_node *node = lookup_name(name, namelen);
+	if (node == NULL) {
+		return _ENOENT;
+	}
+	return read_node(node, old, oldlenp);
+}
+
+static const struct sysctl_node *
+lookup_name(const char *name, size_t namelen)
+{
+	for (uint32_t i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
+		const char *candidate = nodes[i].name;
+		if (strlen(candidate) == namelen
+				&& memcmp(candidate, name, namelen) == 0) {
+			return &nodes[i];
+		}
+	}
+#ifdef ENABLE_STRACE
+	fprintf(stderr, ">> Unknown sysctl: %.*s\n", (int)namelen, name);
+#endif
+	return NULL;
+}
+
+static void
+node_oid(const struct sysctl_node *node, int oid[2])
+{
+	if (node->oid[0] != 0) {
+		oid[0] = node->oid[0];
+		oid[1] = node->oid[1];
+	} else {
+		oid[0] = SYSCTL_AUTO_OID;
+		oid[1] = node - nodes;
+	}
+}
+
+static int
+read_node(const struct sysctl_node *node, void *old, size_t *oldlenp)
+{
+	switch (node->kind) {
+	case SYSCTL_STRING:
+		return read_bytes(node->string, strlen(node->string) + 1, old,
+				oldlenp);
+	case SYSCTL_INT:
+		return read_number(node->number, sizeof(int32_t), old, oldlenp);
+	case SYSCTL_QUAD:
+		return read_number(node->number, sizeof(int64_t), old, oldlenp);
+	case SYSCTL_READER:
+		return node->reader(old, oldlenp);
+	}
 	unimplemented();
+}
+
+static int
+read_hostname(void *old, size_t *oldlenp)
+{
+	char hostname[256];
+	gethostname(hostname, sizeof(hostname));
+	return read_bytes(hostname, strlen(hostname) + 1, old, oldlenp);
+}
+
+static int
+read_boottime(void *old, size_t *oldlenp)
+{
+	struct timespec now, uptime;
+	clock_gettime(CLOCK_REALTIME, &now);
+	clock_gettime(CLOCK_BOOTTIME, &uptime);
+
+	int64_t boot_ns = (now.tv_sec - uptime.tv_sec) * 1000000000LL
+			+ (now.tv_nsec - uptime.tv_nsec);
+	struct __darwin_timeval tv = {
+			.tv_sec = boot_ns / 1000000000LL,
+			.tv_usec = (boot_ns % 1000000000LL) / 1000,
+	};
+	return read_bytes(&tv, sizeof(tv), old, oldlenp);
+}
+
+static int
+read_ncpu(void *old, size_t *oldlenp)
+{
+	return read_number(sysconf(_SC_NPROCESSORS_ONLN), sizeof(int32_t), old,
+			oldlenp);
+}
+
+static int
+read_memsize(void *old, size_t *oldlenp)
+{
+	int64_t memsize = (int64_t)sysconf(_SC_PHYS_PAGES) * PAGE_SIZE;
+	return read_number(memsize, sizeof(int64_t), old, oldlenp);
+}
+
+static int
+read_bytes(const void *value, size_t size, void *old, size_t *oldlenp)
+{
+	if (old == NULL) {
+		*oldlenp = size;
+		return 0;
+	}
+
+	if (*oldlenp < size) {
+		memcpy(old, value, *oldlenp);
+		return _ENOMEM;
+	}
+
+	memcpy(old, value, size);
+	*oldlenp = size;
+	return 0;
+}
+
+static int
+read_number(int64_t value, size_t size, void *old, size_t *oldlenp)
+{
+	if (size == sizeof(int64_t) && old != NULL
+			&& *oldlenp == sizeof(int32_t)) {
+		int32_t narrowed = value;
+		return read_bytes(&narrowed, sizeof(narrowed), old, oldlenp);
+	}
+
+	if (size == sizeof(int32_t)) {
+		int32_t narrowed = value;
+		return read_bytes(&narrowed, sizeof(narrowed), old, oldlenp);
+	}
+	return read_bytes(&value, sizeof(value), old, oldlenp);
 }
