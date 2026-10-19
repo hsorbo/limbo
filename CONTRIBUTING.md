@@ -31,39 +31,32 @@ loosely follow the flattened call graph of the first function definition.
 
 ## Development
 
-Limbo requires a *chroot*(1) and *binfmt.d*(5) configured which can be tricky to
-get right. This is not the only way, and may not be the best way, but is how
-Limbo developers have set up their development environments:
+Limbo needs a macOS userspace to run programs against. Bootstrap a sysroot as
+described in the [User's Guide](README.md#Users-Guide) and export
+`LIMBO_SYSROOT` to point at it.
 
-* In the root of the repository, create a `mnt` folder which contains your
-  bootstrapped macOS chroot
-* Create the `mnt/build` folder and bind mount your `build` folder into it: `sudo mount --bind build mnt/build`
-* Modify `/etc/binfmt.d/Mach-O.conf` to point it at your `limbo` and remove the `F` flag,
-  (see [binfmt-misc.rst](https://www.kernel.org/doc/html/latest/admin-guide/binfmt-misc.html))
-  then re-install the configuration with `systemctl restart systemd-binfmt` if using *systemd*(1)
-* Mount `proc`, `sys` and `dev` into `mnt`:
-  ```
-  # cd mnt && mkdir -p proc sys dev
-  # mount -t proc /proc proc/
-  # mount --rbind /sys sys/
-  # mount --rbind /dev dev/
-  ```
+Build with system call tracing enabled:
+```
+meson setup build -Dstrace=enabled
+ninja -C build
+```
 
-Now, run `meson build -Dstrace=enabled` and `ninja -C build` to build a `limbo` binary
-with system call tracing enabled. Then test your chroot:
-`sudo chroot mnt /bin/echo Hello, world` which should print "Hello, world".
-Try making a change to `limbo`, like adding a `puts` in `main()`, and ensure
-the change is reflected.
+Then run a program with the `limbo` you just built by passing it the path to
+the program, followed by the program's `argv`:
+```
+build/limbo $LIMBO_SYSROOT/bin/echo echo Hello, world
+```
 
-Read on for details on how to debug your changes.
+Programs spawned by that program are run by the *binfmt.d*(5) handler, so for
+those to use your build, point `/etc/binfmt.d/Mach-O.conf` at it.
 
 ## Debugging
 
-To debug Limbo, build or acquire a **static** `gdbserver` from your package manager and place
-it in your chroot. Then, run `gdbserver` and pass it the path to your program:
+To debug Limbo, run your program under `gdbserver`:
 
 ```
-sudo -E chroot mnt /gdbserver --no-startup-with-shell 127.0.0.1:1337 /bin/echo
+gdbserver --no-startup-with-shell 127.0.0.1:1337 build/limbo \
+	$LIMBO_SYSROOT/bin/echo echo Hello, world
 ```
 
 Now you should be able to debug, but there a few other modifications that
