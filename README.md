@@ -50,6 +50,19 @@ Xcode 26.6 toolchain). The x86_64 parts of it can be taken from any Mac, as most
 utilities ship as Fat Mach-O binaries. Non-Fat Mach-O binaries are also
 supported, but must match your architecture.
 
+### From a Mac
+
+`etc/make-sysroot` builds a sysroot with the Xcode toolchain from a Mac and
+writes it as a tar archive to standard output, so it can be run over SSH:
+```
+mkdir -p $LIMBO_SYSROOT
+ssh $MAC sh -s < etc/make-sysroot | tar -x -C $LIMBO_SYSROOT
+```
+
+The Mac's Xcode must contain x86_64 code, and its license must have been
+accepted; see [Xcode](#Xcode). The sections below describe how to assemble a
+sysroot by hand.
+
 ### Minimalist
 
 For simple binaries like `echo`, only the dyld cache and dyld itself are
