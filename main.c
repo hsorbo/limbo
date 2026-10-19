@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,16 +31,13 @@
 #endif
 
 #include <asm/prctl.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <mach/mach.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/auxv.h>
 #include <sys/mman.h>
+#include <sys/personality.h>
 #include <sys/random.h>
-#include <ucontext.h>
 #include <unistd.h>
 
 #include "commpage.h"
@@ -51,43 +49,45 @@
 static char dyld_ls[0x1000];
 
 int arch_prctl(int, unsigned long);
+
+static int run(int argc, char *argv[], char *envp[]);
+static uintptr_t build_stack(uint8_t *exe_base, const char *path, int argc,
+		char *argv[], char *envp[]);
+static int restart_without_aslr(char *argv[], char *envp[]);
 static int commpage_mmap(void);
 
-static unsigned long SYSINFO_EHDR;
-
-static int
-unmap_vdso(void)
+int
+main(int argc, char *argv[], char *envp[])
 {
-	unsigned long vdso = SYSINFO_EHDR;
-	unsigned long vvar = vdso - PAGE_SIZE * 4;
+	if (!(personality(0xffffffff) & ADDR_NO_RANDOMIZE)) {
+		return restart_without_aslr(argv, envp);
+	}
 
-	/* On Darwin, mappings overlap with the Linux [vdso] and [vvar] special
-	 * mappings which are required for certain glibc functionality.
-	 * By unmapping them, we free up the address space, but we also
-	 * permanently break wrappers such as gettimeofday, etc.
-	 */
-	if (munmap((void *)vvar, PAGE_SIZE * 4) == -1) {
-		perror("munmap");
+	if (syscall_dispatch_enable()) {
 		return 1;
 	}
 
-	if (munmap((void *)vdso, PAGE_SIZE * 2) == -1) {
-		perror("munmap");
-		return 1;
-	}
-
-	return 0;
+	return run(argc, argv, envp);
 }
 
-int
-stage2(int argc, char *argv[], char *envp[])
+static int
+restart_without_aslr(char *argv[], char *envp[])
+{
+	if (personality(personality(0xffffffff) | ADDR_NO_RANDOMIZE) == -1) {
+		perror("personality");
+		return 1;
+	}
+
+	execve("/proc/self/exe", argv, envp);
+	perror("execve");
+	return 1;
+}
+
+static int
+run(int argc, char *argv[], char *envp[])
 {
 	if (argc < 2) {
 		fprintf(stderr, "limbo: no path\n");
-		return 1;
-	}
-
-	if (unmap_vdso()) {
 		return 1;
 	}
 
@@ -137,6 +137,30 @@ stage2(int argc, char *argv[], char *envp[])
 	}
 
 	/* Set up the stack in the way that dyld expects */
+	uintptr_t stack_base = build_stack(
+			exe_base, argv[1], argc - 1, argv + 1, envp);
+	if (stack_base == 0) {
+		goto error;
+	}
+
+	if (commpage_mmap()) {
+		goto error;
+	}
+
+	/* Set up the temporary zero-ed TLS storage for dyld */
+	memset(dyld_ls, 0, sizeof(dyld_ls));
+	arch_prctl(ARCH_SET_GS, (unsigned long)dyld_ls);
+
+	asm volatile("mov %0, %%rsp; jmp *%1" ::"r"(stack_base), "r"(entry));
+	__builtin_unreachable();
+error:
+	exit(1);
+}
+
+static uintptr_t
+build_stack(uint8_t *exe_base, const char *path, int argc, char *argv[],
+		char *envp[])
+{
 	char stack_guard[8];
 	char stack_guard_str[16 + 1] = {0};
 	if (getrandom(stack_guard, sizeof(stack_guard), GRND_NONBLOCK)
@@ -144,7 +168,7 @@ stage2(int argc, char *argv[], char *envp[])
 		fprintf(stderr,
 				"limbo: failed to get random data for stack "
 				"guard\n");
-		goto error;
+		return 0;
 	}
 	for (uint32_t i = 0; i < sizeof(stack_guard); i++) {
 		sprintf((char *)&stack_guard_str + i * 2, "%02x",
@@ -161,6 +185,7 @@ stage2(int argc, char *argv[], char *envp[])
 			0);
 	if (stack_base == (uintptr_t)MAP_FAILED) {
 		perror("mmap");
+		return 0;
 	}
 	stack_base = (uintptr_t)VM_USRSTACK64;
 
@@ -182,26 +207,20 @@ stage2(int argc, char *argv[], char *envp[])
 		;
 
 	int applec = 3;
-	int apple_argc = argc - 1; /* Do not include ./limbo in the argv */
 	stack_base -= (applec + 1) * sizeof(void *); /* Apple env pointers */
 	stack_base -= (envc + 1) * sizeof(void *);   /* Env pointers */
-	stack_base -= (apple_argc + 1) * sizeof(void *); /* Arg pointers */
-	stack_base -= sizeof(long) * 2;                  /* Main frame */
-	/* TODO: Determine the correct alignment by consulting the XNU kernel
-	 * sources */
+	stack_base -= (argc + 1) * sizeof(void *);   /* Arg pointers */
+	stack_base -= sizeof(long) * 2;              /* Main frame */
 	stack_base = (stack_base & ~0xf);
 
 	unsigned long *sp = (unsigned long *)stack_base;
 	/* Main frame */
-	/* TODO: This is the default load address for echo, we need to figure
-	 * out how to slide it */
 	*sp++ = (unsigned long)exe_base;
-	*sp++ = (unsigned long)apple_argc;
+	*sp++ = (unsigned long)argc;
 
 	/* Arguments */
-	for (int i = 0; i < apple_argc; i++) {
-		/* +1 because we want to skip ./limbo */
-		*sp++ = (unsigned long)argv[i + 1];
+	for (int i = 0; i < argc; i++) {
+		*sp++ = (unsigned long)argv[i];
 	}
 	*sp++ = 0; /* End of arguments */
 
@@ -212,40 +231,12 @@ stage2(int argc, char *argv[], char *envp[])
 	*sp++ = 0; /* End of environment */
 
 	/* Apple environment */
-	*sp++ = (unsigned long)argv[1];
+	*sp++ = (unsigned long)path;
 	*sp++ = (unsigned long)applev0;
 	*sp++ = (unsigned long)applev;
 	*sp++ = 0; /* End of environment */
 
-	if (commpage_mmap()) {
-		goto error;
-	}
-
-	/* Set up the temporary zero-ed TLS storage for dyld */
-	memset(dyld_ls, 0, sizeof(dyld_ls));
-	arch_prctl(ARCH_SET_GS, (unsigned long)dyld_ls);
-
-	/* In the filldir$INODE64 routine in dyld, there is a reallocf(NULL,
-	 * 0x1000) which doesn't check the NULL to avoid a memmove(dest, NULL,
-	 * 0x1000). I really don't understand what is happening so the only
-	 * conclusion I could draw is that the kernel maps a zeroed zero page.
-	 * This requires a sysctl. If this is in fact the problem, then we
-	 * should replace this with a userfaultfd and unregister it after dyld
-	 * is done. sudo sysctl -w vm.mmap_min_addr=0 sudo setsebool
-	 * mmap_low_allowed true */
-	if (mmap(NULL, 0x1000, PROT_READ, MAP_PRIVATE | MAP_ANON | MAP_FIXED,
-			    -1, 0)
-			== MAP_FAILED) {
-		perror("limbo: cannot map zero page, ensure `sysctl -w "
-		       "vm.mmap_min_addr=0' is set and SELinux is configured "
-		       "`setsebool mmap_low_allowed true': mmap:");
-		goto error;
-	}
-
-	asm volatile("mov %0, %%rsp; jmp *%1" ::"r"(stack_base), "r"(entry));
-	__builtin_unreachable();
-error:
-	exit(1);
+	return stack_base;
 }
 
 static int
@@ -269,115 +260,4 @@ commpage_mmap(void)
 	*(uint64_t *)_COMM_PAGE_MEMORY_SIZE = 17179869184;
 
 	return 0;
-}
-
-static ucontext_t stage0_context;
-static ucontext_t stage1_context;
-static ucontext_t stage2_context;
-
-static char stage1_stack[0x1000];
-
-static const uintptr_t STACK_BASE = 0x80000000;
-static uint64_t stack_start;
-static uint64_t stack_end;
-
-static void
-stage1(int argc, char *argv[], char *envp[])
-{
-	uintptr_t stack_size = stack_end - stack_start;
-
-	if (mremap((void *)stack_start, stack_size, stack_size,
-			    MREMAP_FIXED | MREMAP_MAYMOVE, STACK_BASE)
-			== MAP_FAILED) {
-		perror("mremap");
-		exit(1);
-	}
-
-	if (getcontext(&stage2_context)) {
-		perror("getcontext");
-		exit(1);
-	}
-
-	/* TODO: Set the stack pointer past the [envp] so that the data is not
-	 * overwritten on entry */
-	stage2_context.uc_stack.ss_sp = (void *)(STACK_BASE - 0x8000);
-	stage2_context.uc_stack.ss_size = stack_size - 0x8000;
-	stage2_context.uc_link = &stage1_context;
-
-	char **sargv = (char **)(((uintptr_t)argv - stack_start) + STACK_BASE);
-	char **senvp = (char **)(((uintptr_t)envp - stack_start) + STACK_BASE);
-
-	for (int i = 0; i < argc; i++) {
-		*(uintptr_t *)&sargv[i] -= stack_start;
-		*(uintptr_t *)&sargv[i] += STACK_BASE;
-	}
-
-	for (char **env = senvp; *env; env++) {
-		*(uintptr_t *)env -= stack_start;
-		*(uintptr_t *)env += STACK_BASE;
-	}
-
-	makecontext(&stage2_context, (void (*)())(void *)stage2, 3, argc, sargv,
-			senvp);
-
-	if (swapcontext(&stage1_context, &stage2_context) == -1) {
-		perror("swapcontext");
-	}
-
-	exit(1);
-}
-
-int
-main(int argc, char *argv[], char *envp[])
-{
-	SYSINFO_EHDR = getauxval(AT_SYSINFO_EHDR);
-	if (SYSINFO_EHDR == 0) {
-		perror("getauxval");
-		return 1;
-	}
-
-	if (syscall_dispatch_enable()) {
-		return 1;
-	}
-
-	/* Find beginning and end of the stack */
-	FILE *f = fopen("/proc/self/maps", "r");
-	if (f == NULL) {
-		perror("limbo: cannot open /proc/self/maps");
-		return 1;
-	}
-
-	char buffer[1024];
-	while (fgets(buffer, sizeof(buffer), f) != NULL) {
-		uint64_t start, end;
-		char mode[5];
-		uint32_t offset;
-		char device[8];
-		char inode[12];
-		char path[256];
-		sscanf(buffer, "%lx-%lx %4s %x %7s %11s %255s\n", &start, &end,
-				mode, &offset, device, inode, path);
-		if (!strncmp(path, "[stack]", sizeof(path))) {
-			stack_start = start;
-			stack_end = end;
-		}
-	}
-	fclose(f);
-
-	if (getcontext(&stage1_context)) {
-		perror("getcontext");
-		return 1;
-	}
-
-	stage1_context.uc_stack.ss_sp = stage1_stack;
-	stage1_context.uc_stack.ss_size = sizeof(stage1_stack);
-	stage1_context.uc_link = &stage0_context;
-
-	makecontext(&stage1_context, (void (*)())stage1, 3, argc, argv, envp);
-
-	if (swapcontext(&stage0_context, &stage1_context) == -1) {
-		perror("swapcontext");
-	}
-
-	__builtin_unreachable();
 }
