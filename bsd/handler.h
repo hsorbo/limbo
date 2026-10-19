@@ -366,7 +366,7 @@ int sys_bsdthread_register(user_addr_t threadstart, user_addr_t wqthread,
 int sys_workq_open(void);
 int sys_workq_kernreturn(int options, user_addr_t item, int affinity, int prio);
 int sys_kevent64(int fd, void *changelist, int nchanges, void *eventlist,
-		int nevents, void *flags, void *timeout);
+		int nevents, unsigned int flags, void *timeout);
 uint64_t sys_thread_selfid(void);
 int sys_ledger(int cmd, void *arg1, void *arg2, void *arg3);
 int sys_kevent_qos(int fd, void *changelist, int nchanges, void *eventlist,

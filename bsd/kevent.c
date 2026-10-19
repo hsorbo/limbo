@@ -31,6 +31,7 @@
 #endif
 
 #include <errno.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -38,6 +39,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/eventfd.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -47,6 +50,8 @@
 #include "workq.h"
 #include "xnu-errno.h"
 
+#define EVFILT_READ     -1
+#define EVFILT_WRITE    -2
 #define EVFILT_MACHPORT -8
 #define EVFILT_TIMER    -7
 #define EVFILT_USER     -10
@@ -63,6 +68,7 @@
 #define EV_UDATA_SPECIFIC 0x0100
 #define EV_VANISHED       0x0200
 #define EV_ERROR          0x4000
+#define EV_EOF            0x8000
 
 #define KEVENT_FLAG_IMMEDIATE                 0x000001
 #define KEVENT_FLAG_ERROR_EVENTS              0x000002
@@ -104,6 +110,7 @@
 typedef enum {
 	KQUEUE_WORKQ,
 	KQUEUE_WORKLOOP,
+	KQUEUE_FD,
 } kqueue_kind_t;
 
 struct knote {
@@ -118,10 +125,35 @@ struct knote {
 	uint64_t interval;
 };
 
+struct __darwin_kevent {
+	uint64_t ident;
+	int16_t filter;
+	uint16_t flags;
+	uint32_t fflags;
+	int64_t data;
+	uint64_t udata;
+};
+
+struct __darwin_kevent64_s {
+	uint64_t ident;
+	int16_t filter;
+	uint16_t flags;
+	uint32_t fflags;
+	int64_t data;
+	uint64_t udata;
+	uint64_t ext[2];
+};
+
+struct __darwin_timespec {
+	int64_t tv_sec;
+	int64_t tv_nsec;
+};
+
 struct kqueue {
 	struct kqueue *next;
 	kqueue_kind_t kind;
 	uint64_t id;
+	int fd;
 	struct knote *knotes;
 	bool bound[2];
 	bool requested[2];
@@ -131,16 +163,21 @@ struct kqueue {
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static struct kqueue workq_kqueue = {.kind = KQUEUE_WORKQ};
 static struct kqueue *workloops;
+static struct kqueue *fd_kqueues;
 
 static pthread_cond_t sync_wakeup = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t timer_wakeup;
 static bool timer_thread_started;
 
+static int64_t timeout_nanoseconds(const struct __darwin_timespec *timeout);
+static int kevent_fd(int fd, const struct kevent_qos_s *changes, int nchanges,
+		struct kevent_qos_s *events, int nevents, int64_t timeout);
+static struct kqueue *fd_kqueue_lookup(int fd);
 static struct kqueue *workloop_lookup(uint64_t id, unsigned int flags);
 static int kevent_internal(struct kqueue *kq,
 		const struct kevent_qos_s *changes, int nchanges,
 		struct kevent_qos_s *events, int nevents, uint8_t *data_out,
-		size_t *data_available, unsigned int flags);
+		size_t *data_available, unsigned int flags, int64_t timeout);
 static int kevent_register(
 		struct kqueue *kq, const struct kevent_qos_s *change);
 static struct knote *knote_find(
@@ -166,13 +203,160 @@ static void kqueue_request(struct kqueue *kq, bool manager);
 static bool kqueue_deliverable(struct kqueue *kq, bool manager, uint32_t *qos);
 static bool knote_deliverable(struct knote *kn, bool manager);
 static bool knote_active(struct knote *kn);
+static bool fd_ready(struct knote *kn);
 static uint32_t thread_qos(int32_t priority);
+static int kqueue_wait(struct kqueue *kq, struct kevent_qos_s *events,
+		int nevents, int64_t timeout);
+static void kqueue_poll(struct kqueue *kq, int timeout);
 static int kqueue_collect(struct kqueue *kq, bool manager,
 		struct kevent_qos_s *events, int max_events, uint8_t **data,
 		size_t *data_size);
 static bool machport_receive(
 		struct kevent_qos_s *event, uint8_t **data, size_t *data_size);
 static void knote_delivered(struct knote *kn);
+
+int
+sys_kqueue(void)
+{
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "kqueue()\n");
+#endif
+	int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	if (fd == -1) {
+		return err_map(errno);
+	}
+
+	struct kqueue *kq = calloc(1, sizeof(*kq));
+	kq->kind = KQUEUE_FD;
+	kq->fd = fd;
+	pthread_mutex_lock(&lock);
+	kq->next = fd_kqueues;
+	fd_kqueues = kq;
+	pthread_mutex_unlock(&lock);
+	return fd;
+}
+
+int
+sys_kevent(int fd, void *changelist, int nchanges, void *eventlist, int nevents,
+		void *timeout)
+{
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "kevent(%d, %p, %d, %p, %d, %p)\n", fd, changelist,
+			nchanges, eventlist, nevents, timeout);
+#endif
+	const struct __darwin_kevent *darwin_changes = changelist;
+	struct __darwin_kevent *darwin_events = eventlist;
+	struct kevent_qos_s *changes
+			= calloc(nchanges + nevents, sizeof(*changes));
+	struct kevent_qos_s *events = changes + nchanges;
+	for (int i = 0; i < nchanges; i++) {
+		const struct __darwin_kevent *change = &darwin_changes[i];
+		changes[i] = (struct kevent_qos_s){
+				.ident = change->ident,
+				.filter = change->filter,
+				.flags = change->flags,
+				.fflags = change->fflags,
+				.data = change->data,
+				.udata = change->udata,
+		};
+	}
+
+	int result = kevent_fd(fd, changes, nchanges, events, nevents,
+			timeout_nanoseconds(timeout));
+	for (int i = 0; i < result; i++) {
+		darwin_events[i] = (struct __darwin_kevent){
+				.ident = events[i].ident,
+				.filter = events[i].filter,
+				.flags = events[i].flags,
+				.fflags = events[i].fflags,
+				.data = events[i].data,
+				.udata = events[i].udata,
+		};
+	}
+	free(changes);
+	return result;
+}
+
+static int64_t
+timeout_nanoseconds(const struct __darwin_timespec *timeout)
+{
+	if (timeout == NULL) {
+		return -1;
+	}
+	return timeout->tv_sec * 1000000000LL + timeout->tv_nsec;
+}
+
+static int
+kevent_fd(int fd, const struct kevent_qos_s *changes, int nchanges,
+		struct kevent_qos_s *events, int nevents, int64_t timeout)
+{
+	pthread_mutex_lock(&lock);
+	int result = _EBADF;
+	struct kqueue *kq = fd_kqueue_lookup(fd);
+	if (kq != NULL) {
+		result = kevent_internal(kq, changes, nchanges, events, nevents,
+				NULL, NULL, 0, timeout);
+	}
+	pthread_mutex_unlock(&lock);
+	return result;
+}
+
+static struct kqueue *
+fd_kqueue_lookup(int fd)
+{
+	for (struct kqueue *kq = fd_kqueues; kq != NULL; kq = kq->next) {
+		if (kq->fd == fd) {
+			return kq;
+		}
+	}
+	return NULL;
+}
+
+int
+sys_kevent64(int fd, void *changelist, int nchanges, void *eventlist,
+		int nevents, unsigned int flags, void *timeout)
+{
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "kevent64(%d, %p, %d, %p, %d, %#x, %p)\n", fd,
+			changelist, nchanges, eventlist, nevents, flags,
+			timeout);
+#endif
+	const struct __darwin_kevent64_s *darwin_changes = changelist;
+	struct __darwin_kevent64_s *darwin_events = eventlist;
+	struct kevent_qos_s *changes
+			= calloc(nchanges + nevents, sizeof(*changes));
+	struct kevent_qos_s *events = changes + nchanges;
+	for (int i = 0; i < nchanges; i++) {
+		const struct __darwin_kevent64_s *change = &darwin_changes[i];
+		changes[i] = (struct kevent_qos_s){
+				.ident = change->ident,
+				.filter = change->filter,
+				.flags = change->flags,
+				.fflags = change->fflags,
+				.data = change->data,
+				.udata = change->udata,
+				.ext = {change->ext[0], change->ext[1]},
+		};
+	}
+
+	int result = kevent_fd(fd, changes, nchanges, events, nevents,
+			(flags & KEVENT_FLAG_IMMEDIATE)
+					? 0
+					: timeout_nanoseconds(timeout));
+	for (int i = 0; i < result; i++) {
+		darwin_events[i] = (struct __darwin_kevent64_s){
+				.ident = events[i].ident,
+				.filter = events[i].filter,
+				.flags = events[i].flags,
+				.fflags = events[i].fflags,
+				.data = events[i].data,
+				.udata = events[i].udata,
+				.ext = {events[i].ext[0], events[i].ext[1]},
+		};
+	}
+	free(changes);
+	return result;
+}
 
 int
 sys_kevent_qos(int fd, void *changelist, int nchanges, void *eventlist,
@@ -184,13 +368,16 @@ sys_kevent_qos(int fd, void *changelist, int nchanges, void *eventlist,
 			changelist, nchanges, eventlist, nevents, data_out,
 			(void *)data_available, flags);
 #endif
+	int64_t timeout = (flags & KEVENT_FLAG_IMMEDIATE) ? 0 : -1;
 	if (!(flags & KEVENT_FLAG_WORKQ)) {
-		unimplemented();
+		return kevent_fd(fd, changelist, nchanges, eventlist, nevents,
+				timeout);
 	}
 
 	pthread_mutex_lock(&lock);
 	int result = kevent_internal(&workq_kqueue, changelist, nchanges,
-			eventlist, nevents, data_out, data_available, flags);
+			eventlist, nevents, data_out, data_available, flags,
+			timeout);
 	pthread_mutex_unlock(&lock);
 	return result;
 }
@@ -213,7 +400,8 @@ sys_kevent_id(uint64_t id, void *changelist, int nchanges, void *eventlist,
 								     : _EEXIST;
 	} else {
 		result = kevent_internal(kq, changelist, nchanges, eventlist,
-				nevents, data_out, data_available, flags);
+				nevents, data_out, data_available, flags,
+				(flags & KEVENT_FLAG_IMMEDIATE) ? 0 : -1);
 	}
 	pthread_mutex_unlock(&lock);
 	return result;
@@ -245,7 +433,8 @@ workloop_lookup(uint64_t id, unsigned int flags)
 static int
 kevent_internal(struct kqueue *kq, const struct kevent_qos_s *changes,
 		int nchanges, struct kevent_qos_s *events, int nevents,
-		uint8_t *data_out, size_t *data_available, unsigned int flags)
+		uint8_t *data_out, size_t *data_available, unsigned int flags,
+		int64_t timeout)
 {
 	int nerrors = 0;
 	for (int i = 0; i < nchanges; i++) {
@@ -266,7 +455,10 @@ kevent_internal(struct kqueue *kq, const struct kevent_qos_s *changes,
 			|| nevents == 0) {
 		return nerrors;
 	}
-	if (!(flags & KEVENT_FLAG_IMMEDIATE)) {
+	if (kq->kind == KQUEUE_FD) {
+		return kqueue_wait(kq, events, nevents, timeout);
+	}
+	if (timeout != 0) {
 		unimplemented();
 	}
 
@@ -556,7 +748,13 @@ timer_earliest(void)
 static struct kqueue *
 kqueue_next(struct kqueue *kq)
 {
-	return (kq == &workq_kqueue) ? workloops : kq->next;
+	if (kq == &workq_kqueue) {
+		return (workloops != NULL) ? workloops : fd_kqueues;
+	}
+	if (kq->next != NULL) {
+		return kq->next;
+	}
+	return (kq->kind == KQUEUE_WORKLOOP) ? fd_kqueues : NULL;
 }
 
 static void
@@ -620,6 +818,11 @@ workloop_sync_wait(struct knote *kn)
 static void
 kqueue_request(struct kqueue *kq, bool manager)
 {
+	if (kq->kind == KQUEUE_FD) {
+		eventfd_write(kq->fd, 1);
+		return;
+	}
+
 	uint32_t qos;
 	if (kq->bound[manager] || kq->requested[manager] || kq->owned
 			|| !kqueue_deliverable(kq, manager, &qos)) {
@@ -660,6 +863,9 @@ static bool
 knote_active(struct knote *kn)
 {
 	switch (kn->kev.filter) {
+	case EVFILT_READ:
+	case EVFILT_WRITE:
+		return fd_ready(kn);
 	case EVFILT_MACHPORT:
 		return ipc_port_peek(kn->kev.ident);
 	default:
@@ -667,11 +873,92 @@ knote_active(struct knote *kn)
 	}
 }
 
+static bool
+fd_ready(struct knote *kn)
+{
+	struct pollfd pfd = {
+			.fd = kn->kev.ident,
+			.events
+			= (kn->kev.filter == EVFILT_READ) ? POLLIN : POLLOUT,
+	};
+	if (poll(&pfd, 1, 0) != 1 || (pfd.revents & POLLNVAL)) {
+		return false;
+	}
+
+	if (pfd.revents & (POLLHUP | POLLERR)) {
+		kn->kev.flags |= EV_EOF;
+	}
+	int available = 1;
+	if (kn->kev.filter == EVFILT_READ) {
+		ioctl(kn->kev.ident, FIONREAD, &available);
+	}
+	kn->kev.data = available;
+	return true;
+}
+
 static uint32_t
 thread_qos(int32_t priority)
 {
 	return ffs(((uint32_t)priority & PTHREAD_PRIORITY_QOS_CLASS_MASK)
 			>> PTHREAD_PRIORITY_QOS_CLASS_SHIFT);
+}
+
+static int
+kqueue_wait(struct kqueue *kq, struct kevent_qos_s *events, int nevents,
+		int64_t timeout)
+{
+	uint64_t deadline = (timeout > 0) ? now_monotonic() + timeout : 0;
+	while (true) {
+		uint8_t *data = NULL;
+		size_t data_size = 0;
+		int count = kqueue_collect(
+				kq, false, events, nevents, &data, &data_size);
+		if (count != 0 || timeout == 0) {
+			return count;
+		}
+
+		int poll_timeout = -1;
+		if (timeout > 0) {
+			uint64_t now = now_monotonic();
+			if (now >= deadline) {
+				return 0;
+			}
+			poll_timeout = (deadline - now + 999999) / 1000000;
+		}
+		kqueue_poll(kq, poll_timeout);
+	}
+}
+
+static void
+kqueue_poll(struct kqueue *kq, int timeout)
+{
+	nfds_t count = 1;
+	for (struct knote *kn = kq->knotes; kn != NULL; kn = kn->next) {
+		count++;
+	}
+
+	struct pollfd *fds = calloc(count, sizeof(*fds));
+	fds[0] = (struct pollfd){.fd = kq->fd, .events = POLLIN};
+	nfds_t used = 1;
+	for (struct knote *kn = kq->knotes; kn != NULL; kn = kn->next) {
+		if (kn->disabled) {
+			continue;
+		}
+		if (kn->kev.filter == EVFILT_READ) {
+			fds[used++] = (struct pollfd){
+					.fd = kn->kev.ident, .events = POLLIN};
+		} else if (kn->kev.filter == EVFILT_WRITE) {
+			fds[used++] = (struct pollfd){
+					.fd = kn->kev.ident, .events = POLLOUT};
+		}
+	}
+
+	pthread_mutex_unlock(&lock);
+	poll(fds, used, timeout);
+	eventfd_t value;
+	eventfd_read(kq->fd, &value);
+	pthread_mutex_lock(&lock);
+	free(fds);
 }
 
 static int
@@ -803,6 +1090,38 @@ uint64_t
 kevent_kqid(struct kqueue *kq)
 {
 	return kq->id;
+}
+
+void
+kevent_close(int fd)
+{
+	pthread_mutex_lock(&lock);
+	for (struct kqueue **p = &fd_kqueues; *p != NULL; p = &(*p)->next) {
+		struct kqueue *kq = *p;
+		if (kq->fd == fd) {
+			*p = kq->next;
+			while (kq->knotes != NULL) {
+				knote_detach(kq->knotes);
+			}
+			free(kq);
+			break;
+		}
+	}
+
+	for (struct kqueue *kq = &workq_kqueue; kq != NULL;
+			kq = kqueue_next(kq)) {
+		struct knote *kn = kq->knotes;
+		while (kn != NULL) {
+			struct knote *next = kn->next;
+			if ((kn->kev.filter == EVFILT_READ
+					    || kn->kev.filter == EVFILT_WRITE)
+					&& kn->kev.ident == (uint64_t)fd) {
+				knote_detach(kn);
+			}
+			kn = next;
+		}
+	}
+	pthread_mutex_unlock(&lock);
 }
 
 void

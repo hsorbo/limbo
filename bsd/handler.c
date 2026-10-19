@@ -61,6 +61,7 @@
 
 #include "commpage.h"
 #include "handler.h"
+#include "kevent.h"
 #include "osfmk/semaphore.h"
 #include "shared_cache.h"
 #include "sysroot.h"
@@ -205,7 +206,7 @@ sys_sys_close(int fd)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "sys_close(%p)\n", (void *)fd);
 #endif
-	// if (fd == 2) { return 0; }
+	kevent_close(fd);
 	return errno_map(close(fd));
 }
 
@@ -2495,44 +2496,11 @@ sys_auditctl(char *path)
 }
 
 int
-sys_kqueue(void)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "kqueue()\n");
-#endif
-	unimplemented();
-}
-
-int
-sys_kevent(int fd, void *changelist, int nchanges, void *eventlist, int nevents,
-		void *timeout)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "kevent(%p, %p, %p, %p, %p, %p)\n", (void *)fd,
-			(void *)changelist, (void *)nchanges, (void *)eventlist,
-			(void *)nevents, (void *)timeout);
-#endif
-	unimplemented();
-}
-
-int
 sys_lchown(user_addr_t path, void *owner, void *group)
 {
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "lchown(%p, %p, %p)\n", (void *)path, (void *)owner,
 			(void *)group);
-#endif
-	unimplemented();
-}
-
-int
-sys_kevent64(int fd, void *changelist, int nchanges, void *eventlist,
-		int nevents, void *flags, void *timeout)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "kevent64(%p, %p, %p, %p, %p, %p, %p)\n", (void *)fd,
-			(void *)changelist, (void *)nchanges, (void *)eventlist,
-			(void *)nevents, (void *)flags, (void *)timeout);
 #endif
 	unimplemented();
 }
@@ -4402,7 +4370,7 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		return sys_workq_kernreturn(arg1, (void *)arg2, arg3, arg4);
 	case 0x171:
 		return sys_kevent64(arg1, (void *)arg2, arg3, (void *)arg4,
-				arg5, (void *)arg6, (void *)sp[1]);
+				arg5, arg6, (void *)sp[1]);
 	case 0x172:
 		return sys_nosys();
 	case 0x173:
