@@ -2062,13 +2062,12 @@ sys_shared_region_check_np(uint64_t *start_address)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "shared_region_check_np(%p)\n", (void *)start_address);
 #endif
-	if (shared_cache_start != NULL) {
-		*start_address = (uint64_t)shared_cache_start;
+	if (start_address == (uint64_t *)-1) {
 		return 0;
-	} else {
-		/* Say that we have no shared region */
-		unimplemented();
 	}
+
+	*start_address = (uint64_t)shared_cache_start;
+	return 0;
 }
 
 int

@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,58 +27,225 @@
  */
 
 #include <assert.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/statfs.h>
 #include <unistd.h>
 
 #include "shared_cache.h"
 
 void *shared_cache_start = NULL;
 
+static int reserve_shared_region(dyld_cache_header_t *header);
+static int map_cache_file(int f, dyld_cache_header_t *header);
+static int map_cache_mapping(int f, dyld_cache_mapping_and_slide_info_t *m);
+static int map_subcaches(int f, const char *path, dyld_cache_header_t *header);
+static int map_subcache(const char *path, dyld_subcache_entry_t *entry);
+static int map_dynamic_data(
+		int f, const char *path, dyld_cache_header_t *header);
 static void rebase_chain(uint8_t *page_content, uint16_t page_start_offset,
 		dyld_cache_slide_info2_t *info);
 static void rebase_page(dyld_cache_slide_info2_t *info, uint64_t address);
 
-void
-shared_cache_mmap(char *data, int f)
+int
+shared_cache_mmap(const char *path)
 {
-	dyld_cache_slide_info2_t *info;
-	dyld_cache_header_t *header;
-	dyld_cache_mapping_and_slide_info_t *slides;
-
-	header = (dyld_cache_header_t *)data;
-	slides = (dyld_cache_mapping_and_slide_info_t *)(data
-			+ header->mappingWithSlideOffset);
-
-	for (uint32_t i = 0; i < header->mappingWithSlideCount; i++) {
-		dyld_cache_mapping_and_slide_info_t slide = slides[i];
-
-		/* Let all the mappings leak, they will never be removed */
-		void *base = mmap((void *)slide.address, slide.size,
-				slide.initProt, MAP_PRIVATE | MAP_FIXED, f,
-				slide.fileOffset);
-		if (base == MAP_FAILED) {
-			perror("mmap");
-			return;
-		}
-
-		info = (dyld_cache_slide_info2_t *)(data
-				+ slide.slideInfoFileOffset);
-
-		if (slide.slideInfoFileOffset) {
-			assert(info->version == 2);
-			assert(info->page_size == 0x1000);
-			assert(info->delta_mask == 0x00ffff0000000000);
-			assert(info->page_starts_count
-					== slide.size / info->page_size);
-			rebase_page(info, slide.address);
-		}
+	int f = open(path, O_RDONLY);
+	if (f == -1) {
+		perror("open");
+		return 1;
 	}
 
-	shared_cache_start = (void *)header->sharedRegionStart;
+	dyld_cache_header_t header;
+	if (pread(f, &header, sizeof(header), 0) != sizeof(header)) {
+		perror("pread");
+		goto error;
+	}
+
+	if (reserve_shared_region(&header) || map_cache_file(f, &header)
+			|| map_subcaches(f, path, &header)
+			|| map_dynamic_data(f, path, &header)) {
+		goto error;
+	}
+
+	close(f);
+	shared_cache_start = (void *)header.sharedRegionStart;
+	return 0;
+error:
+	close(f);
+	return 1;
+}
+
+static int
+reserve_shared_region(dyld_cache_header_t *header)
+{
+	void *region = mmap((void *)header->sharedRegionStart,
+			header->sharedRegionSize, PROT_NONE,
+			MAP_PRIVATE | MAP_ANON | MAP_FIXED_NOREPLACE
+					| MAP_NORESERVE,
+			-1, 0);
+	if (region == MAP_FAILED) {
+		perror("mmap");
+		return 1;
+	}
+	return 0;
+}
+
+static int
+map_cache_file(int f, dyld_cache_header_t *header)
+{
+	uint32_t count = header->mappingWithSlideCount;
+	dyld_cache_mapping_and_slide_info_t mappings[count];
+	ssize_t size = sizeof(mappings);
+	if (pread(f, mappings, size, header->mappingWithSlideOffset) != size) {
+		perror("pread");
+		return 1;
+	}
+
+	for (uint32_t i = 0; i < count; i++) {
+		if (map_cache_mapping(f, &mappings[i])) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int
+map_cache_mapping(int f, dyld_cache_mapping_and_slide_info_t *m)
+{
+	if (m->slideInfoFileSize == 0) {
+		void *base = mmap((void *)m->address, m->size, m->initProt,
+				MAP_PRIVATE | MAP_FIXED, f, m->fileOffset);
+		if (base == MAP_FAILED) {
+			perror("mmap");
+			return 1;
+		}
+		return 0;
+	}
+
+	void *base = mmap((void *)m->address, m->size, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_FIXED, f, m->fileOffset);
+	if (base == MAP_FAILED) {
+		perror("mmap");
+		return 1;
+	}
+
+	dyld_cache_slide_info2_t *info = malloc(m->slideInfoFileSize);
+	ssize_t size = m->slideInfoFileSize;
+	if (pread(f, info, size, m->slideInfoFileOffset) != size) {
+		perror("pread");
+		free(info);
+		return 1;
+	}
+
+	assert(info->version == 2);
+	assert(info->page_size == 0x1000);
+	assert(info->delta_mask == 0x00ffff0000000000);
+	assert(info->page_starts_count == m->size / info->page_size);
+	rebase_page(info, m->address);
+	free(info);
+
+	if (mprotect(base, m->size, m->initProt) == -1) {
+		perror("mprotect");
+		return 1;
+	}
+	return 0;
+}
+
+static int
+map_subcaches(int f, const char *path, dyld_cache_header_t *header)
+{
+	if (header->mappingOffset
+			<= offsetof(dyld_cache_header_t, subCacheArrayCount)) {
+		return 0;
+	}
+
+	uint32_t count = header->subCacheArrayCount;
+	dyld_subcache_entry_t entries[count];
+	ssize_t size = sizeof(entries);
+	if (pread(f, entries, size, header->subCacheArrayOffset) != size) {
+		perror("pread");
+		return 1;
+	}
+
+	for (uint32_t i = 0; i < count; i++) {
+		if (map_subcache(path, &entries[i])) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int
+map_subcache(const char *path, dyld_subcache_entry_t *entry)
+{
+	char subcache_path[PATH_MAX];
+	snprintf(subcache_path, sizeof(subcache_path), "%s%s", path,
+			entry->fileSuffix);
+
+	int f = open(subcache_path, O_RDONLY);
+	if (f == -1) {
+		perror("open");
+		return 1;
+	}
+
+	dyld_cache_header_t header;
+	int result = 1;
+	if (pread(f, &header, sizeof(header), 0) != sizeof(header)) {
+		perror("pread");
+	} else {
+		result = map_cache_file(f, &header);
+	}
+
+	close(f);
+	return result;
+}
+
+static int
+map_dynamic_data(int f, const char *path, dyld_cache_header_t *header)
+{
+	if (header->mappingOffset
+			<= offsetof(dyld_cache_header_t, dynamicDataMaxSize)) {
+		return 0;
+	}
+
+	struct statfs fs;
+	struct stat st;
+	if (fstatfs(f, &fs) == -1 || fstat(f, &st) == -1) {
+		perror("stat");
+		return 1;
+	}
+
+	dyld_cache_dynamic_data_header_t *data = mmap(
+			(void *)(header->sharedRegionStart
+					+ header->dynamicDataOffset),
+			header->dynamicDataMaxSize, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+	if (data == MAP_FAILED) {
+		perror("mmap");
+		return 1;
+	}
+
+	strcpy(data->magic, "dyld_data    v4");
+	memcpy(&data->fsId, &fs.f_fsid, sizeof(data->fsId));
+	data->fsObjId = st.st_ino;
+	data->cachePathOffset
+			= offsetof(dyld_cache_dynamic_data_header_t, strings);
+	data->cachePathSize = strlen(path) + 1;
+	memcpy(data->strings, path, data->cachePathSize);
+
+	if (mprotect(data, header->dynamicDataMaxSize, PROT_READ) == -1) {
+		perror("mprotect");
+		return 1;
+	}
+	return 0;
 }
 
 /*

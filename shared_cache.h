@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -35,8 +36,8 @@ typedef struct {
 	char magic[16];
 	uint32_t mappingOffset;
 	uint32_t mappingCount;
-	uint32_t imagesOffset;
-	uint32_t imagesCount;
+	uint32_t imagesOffsetOld;
+	uint32_t imagesCountOld;
 	uint64_t dyldBaseAddress;
 	uint64_t codeSignatureOffset;
 	uint64_t codeSignatureSize;
@@ -77,7 +78,60 @@ typedef struct {
 	uint64_t otherTrieSize;
 	uint32_t mappingWithSlideOffset;
 	uint32_t mappingWithSlideCount;
+	uint64_t dylibsPBLStateArrayAddrUnused;
+	uint64_t dylibsPBLSetAddr;
+	uint64_t programsPBLSetPoolAddr;
+	uint64_t programsPBLSetPoolSize;
+	uint64_t programTrieAddr;
+	uint32_t programTrieSize;
+	uint32_t osVersion;
+	uint32_t altPlatform;
+	uint32_t altOsVersion;
+	uint64_t swiftOptsOffset;
+	uint64_t swiftOptsSize;
+	uint32_t subCacheArrayOffset;
+	uint32_t subCacheArrayCount;
+	uint8_t symbolFileUUID[16];
+	uint64_t rosettaReadOnlyAddr;
+	uint64_t rosettaReadOnlySize;
+	uint64_t rosettaReadWriteAddr;
+	uint64_t rosettaReadWriteSize;
+	uint32_t imagesOffset;
+	uint32_t imagesCount;
+	uint32_t cacheSubType;
+	uint32_t padding2;
+	uint64_t objcOptsOffset;
+	uint64_t objcOptsSize;
+	uint64_t cacheAtlasOffset;
+	uint64_t cacheAtlasSize;
+	uint64_t dynamicDataOffset;
+	uint64_t dynamicDataMaxSize;
 } dyld_cache_header_t;
+
+typedef struct {
+	uint8_t uuid[16];
+	uint64_t cacheVMOffset;
+	char fileSuffix[32];
+} dyld_subcache_entry_t;
+
+typedef struct {
+	char magic[16];
+	uint64_t fsId;
+	uint64_t fsObjId;
+	uint32_t osCryptexPathOffset;
+	uint32_t cachePathOffset;
+	uint64_t reserved1;
+	uint64_t systemWideFunctionVariantFlags[2];
+	uint64_t processorFunctionVariantFlags[2];
+	uint64_t reserved2;
+	uint32_t osCryptexPathSize;
+	uint32_t cachePathSize;
+	uint32_t rootsBitmapOffset;
+	uint32_t rootsBitmapSize;
+	uint32_t cryptexRootsBitmapOffset;
+	uint32_t cryptexRootsBitmapSize;
+	char strings[];
+} dyld_cache_dynamic_data_header_t;
 
 typedef struct {
 	uint64_t address;
@@ -103,4 +157,4 @@ typedef struct {
 
 extern void *shared_cache_start;
 
-void shared_cache_mmap(char *data, int f);
+int shared_cache_mmap(const char *path);

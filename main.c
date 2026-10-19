@@ -86,7 +86,7 @@ restart_without_aslr(char *argv[], char *envp[])
 static int
 run(int argc, char *argv[], char *envp[])
 {
-	if (argc < 2) {
+	if (argc < 3) {
 		fprintf(stderr, "limbo: no path\n");
 		return 1;
 	}
@@ -97,26 +97,13 @@ run(int argc, char *argv[], char *envp[])
 
 	/* Map the shared cache into our memory space, persisted across fork()
 	 */
-	int cache_fd;
-	size_t cache_size;
-	void *cache = linker_mmap(
-			"/System/Library/dyld/dyld_shared_cache_x86_64",
-			&cache_size, &cache_fd);
-	if (cache == NULL) {
-		fprintf(stderr, "limbo: cannot read shared cache\n");
-		return 1;
-	}
-
-	shared_cache_mmap(cache, cache_fd);
-	if (shared_cache_start == NULL) {
+	if (shared_cache_mmap(
+			    "/System/Library/dyld/dyld_shared_cache_x86_64")) {
 		fprintf(stderr,
 				"limbo: could not map and rebase shared "
 				"cache\n");
 		return 1;
 	}
-
-	close(cache_fd);
-	munmap(cache, cache_size);
 
 	/* Map the target executable and determine its interpreter */
 	const char *dylinker_path = NULL;
@@ -138,7 +125,7 @@ run(int argc, char *argv[], char *envp[])
 
 	/* Set up the stack in the way that dyld expects */
 	uintptr_t stack_base = build_stack(
-			exe_base, argv[1], argc - 1, argv + 1, envp);
+			exe_base, argv[1], argc - 2, argv + 2, envp);
 	if (stack_base == 0) {
 		goto error;
 	}
@@ -161,52 +148,37 @@ static uintptr_t
 build_stack(uint8_t *exe_base, const char *path, int argc, char *argv[],
 		char *envp[])
 {
-	char stack_guard[8];
-	char stack_guard_str[16 + 1] = {0};
-	if (getrandom(stack_guard, sizeof(stack_guard), GRND_NONBLOCK)
-			!= sizeof(stack_guard)) {
-		fprintf(stderr,
-				"limbo: failed to get random data for stack "
-				"guard\n");
-		return 0;
-	}
-	for (uint32_t i = 0; i < sizeof(stack_guard); i++) {
-		sprintf((char *)&stack_guard_str + i * 2, "%02x",
-				(unsigned char)stack_guard[i]);
-	}
-	stack_guard_str[16] = '\0';
-
 	/* Map 64mb of stack with  MAP_GROWSDOWN so that the stack automatically
 	 * grows down */
-	uintptr_t stack_base = (uintptr_t)mmap(
+	void *stack = mmap(
 			(void *)((uintptr_t)VM_USRSTACK64 - 64 * 1024 * 1024),
 			64 * 1024 * 1024, PROT_READ | PROT_WRITE,
 			MAP_PRIVATE | MAP_FIXED | MAP_ANON | MAP_GROWSDOWN, -1,
 			0);
-	if (stack_base == (uintptr_t)MAP_FAILED) {
+	if (stack == MAP_FAILED) {
 		perror("mmap");
 		return 0;
 	}
-	stack_base = (uintptr_t)VM_USRSTACK64;
 
-	/* Set up the stack_guard= value */
-	unsigned long applev;
-	unsigned long applev0;
-	applev0 = applev = (stack_base
-			-= (strlen("stack_guard=") + sizeof(stack_guard_str)));
-	memcpy((void *)stack_base, "stack_guard=", strlen("stack_guard="));
-	memcpy((void *)(stack_base + strlen("stack_guard=")), stack_guard_str,
-			sizeof(stack_guard_str));
-	/* MUST HAVE 0x */
-	const char *junk = "ptr_munge=0x1337";
-	applev = (stack_base -= strlen(junk) + 1);
-	memcpy((void *)stack_base, junk, strlen(junk) + 1);
+	uint64_t entropy[4];
+	if (getrandom(entropy, sizeof(entropy), 0) != sizeof(entropy)) {
+		perror("getrandom");
+		return 0;
+	}
 
-	int envc;
+	char *apple[4];
+	uint32_t applec = sizeof(apple) / sizeof(apple[0]);
+	asprintf(&apple[0], "executable_path=%s", path);
+	asprintf(&apple[1], "stack_guard=0x%lx", entropy[0]);
+	asprintf(&apple[2], "malloc_entropy=0x%lx,0x%lx", entropy[1],
+			entropy[2]);
+	asprintf(&apple[3], "ptr_munge=0x%lx", entropy[3]);
+
+	uint32_t envc;
 	for (envc = 0; envp[envc] != NULL; envc++)
 		;
 
-	int applec = 3;
+	uintptr_t stack_base = (uintptr_t)VM_USRSTACK64;
 	stack_base -= (applec + 1) * sizeof(void *); /* Apple env pointers */
 	stack_base -= (envc + 1) * sizeof(void *);   /* Env pointers */
 	stack_base -= (argc + 1) * sizeof(void *);   /* Arg pointers */
@@ -225,15 +197,15 @@ build_stack(uint8_t *exe_base, const char *path, int argc, char *argv[],
 	*sp++ = 0; /* End of arguments */
 
 	/* Environment */
-	for (int i = 0; i < envc; i++) {
+	for (uint32_t i = 0; i < envc; i++) {
 		*sp++ = (unsigned long)envp[i];
 	}
 	*sp++ = 0; /* End of environment */
 
 	/* Apple environment */
-	*sp++ = (unsigned long)path;
-	*sp++ = (unsigned long)applev0;
-	*sp++ = (unsigned long)applev;
+	for (uint32_t i = 0; i < applec; i++) {
+		*sp++ = (unsigned long)apple[i];
+	}
 	*sp++ = 0; /* End of environment */
 
 	return stack_base;
