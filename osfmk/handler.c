@@ -1123,7 +1123,7 @@ sys_osfmk(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		return sys_kern_invalid();
 	default:
 #ifdef ENABLE_STRACE
-		printf(">> Missing Mach system call: %#lx\n", syscall);
+		fprintf(stderr, ">> Missing Mach system call: %#lx\n", syscall);
 #endif
 		abort();
 	}

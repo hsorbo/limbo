@@ -7,8 +7,8 @@
 static inline void __attribute__ ((noreturn))
 unimplemented(void)
 {
-	extern int puts(const char *);
+	extern long write(int, const void *, unsigned long);
 	extern void abort(void);
-	puts("not implemented");
+	write(2, "not implemented\n", 16);
 	abort();
 }

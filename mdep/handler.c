@@ -53,7 +53,9 @@ sys_mdep(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		return sys_thread_set_tsd_base(arg1, arg2);
 	default:
 #ifdef ENABLE_STRACE
-		printf(">> Missing machine-dependent system call: %#lx\n",
+		fprintf(stderr,
+				">> Missing machine-dependent system call: "
+				"%#lx\n",
 				syscall);
 #endif
 		abort();

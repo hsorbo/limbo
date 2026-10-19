@@ -42,7 +42,8 @@ executable('limbo',
   sources: [
     'linker.c',
     'main.c',
-    'shared_cache.c'
+    'shared_cache.c',
+    'syscall.c',
   ],
   include_directories: include_dir,
   dependencies: [shm_dep, thread_dep],

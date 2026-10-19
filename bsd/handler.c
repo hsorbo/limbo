@@ -3660,7 +3660,8 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 {
 	switch (syscall) {
 	case 0x0:
-		return sys_nosys();
+		return sys_bsd(arg1, arg2, arg3, arg4, arg5, arg6, sp[1],
+				sp + 1);
 	case 0x1:
 		return sys_exit(arg1);
 	case 0x2:
