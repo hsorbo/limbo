@@ -4862,6 +4862,14 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 	case 0x221:
 		return sys_proc_info_extended_id(arg1, arg2, arg3, arg4, arg5,
 				arg6, (void *)sp[1], sp[2]);
+	case 0x222:
+	case 0x223:
+	case 0x224:
+	case 0x225:
+		return sys_enosys();
+	case 0x226:
+		return sys_map_with_linking_np(
+				(void *)arg1, arg2, (void *)arg3, arg4);
 	default:
 		fprintf(stderr, ">> Missing BSD system call: %#lx\n", syscall);
 		unimplemented();

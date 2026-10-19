@@ -522,3 +522,5 @@ int sys_ulock_wait2(uint32_t operation, void *addr, uint64_t value,
 int sys_proc_info_extended_id(int32_t callnum, int32_t pid, uint32_t flavor,
 		uint32_t flags, uint64_t ext_id, uint64_t arg,
 		user_addr_t buffer, int32_t buffersize);
+int sys_map_with_linking_np(user_addr_t regions, uint32_t region_count,
+		user_addr_t blob, uint32_t blob_size);
