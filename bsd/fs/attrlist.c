@@ -162,6 +162,8 @@ struct reference {
 #define ATTR_CMNEXT_NOFIRMLINKPATH 0x00000020
 #define ATTR_CMNEXT_REALDEVID      0x00000040
 #define ATTR_CMNEXT_REALFSID       0x00000080
+#define ATTR_CMNEXT_CLONEID        0x00000100
+#define ATTR_CMNEXT_EXT_FLAGS      0x00000200
 
 typedef uint32_t __darwin_dev_t;
 typedef uint32_t fsobj_type_t;
@@ -373,6 +375,12 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		commonattr &= ~ATTR_CMN_ACCTIME;
 	}
 
+	if (returned.commonattr & ATTR_CMN_FNDRINFO) {
+		memset(buffer + offset, 0, 32);
+		offset += 32;
+		commonattr &= ~ATTR_CMN_FNDRINFO;
+	}
+
 	if (returned.commonattr & ATTR_CMN_OWNERID) {
 		offset = pack_u32(buffer, offset, s.st_uid);
 		commonattr &= ~ATTR_CMN_OWNERID;
@@ -393,6 +401,16 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		commonattr &= ~ATTR_CMN_FLAGS;
 	}
 
+	if (returned.commonattr & ATTR_CMN_GEN_COUNT) {
+		offset = pack_u32(buffer, offset, 0);
+		commonattr &= ~ATTR_CMN_GEN_COUNT;
+	}
+
+	if (returned.commonattr & ATTR_CMN_DOCUMENT_ID) {
+		offset = pack_u32(buffer, offset, 0);
+		commonattr &= ~ATTR_CMN_DOCUMENT_ID;
+	}
+
 	if (returned.commonattr & ATTR_CMN_FILEID) {
 		uint64_t ino = s.st_ino;
 		memcpy(buffer + offset, &ino, sizeof(ino));
@@ -400,10 +418,25 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		commonattr &= ~ATTR_CMN_FILEID;
 	}
 
+	if (returned.commonattr & ATTR_CMN_PARENTID) {
+		char parent_path[PATH_MAX];
+		memcpy(parent_path, host_path, sizeof(parent_path));
+		strrchr(parent_path, '/')[1] = '\0';
+		struct stat parent = {0};
+		stat(parent_path, &parent);
+		offset = pack_u64(buffer, offset, parent.st_ino);
+		commonattr &= ~ATTR_CMN_PARENTID;
+	}
+
 	if (returned.commonattr & ATTR_CMN_FULLPATH) {
 		offset = pack_reference(buffer, offset, references,
 				&reference_count, path);
 		commonattr &= ~ATTR_CMN_FULLPATH;
+	}
+
+	if (returned.commonattr & ATTR_CMN_ADDEDTIME) {
+		offset = pack_timespec(buffer, offset, &s.st_ctim);
+		commonattr &= ~ATTR_CMN_ADDEDTIME;
 	}
 
 	if (returned.commonattr & ATTR_CMN_DATA_PROTECT_FLAGS) {
@@ -489,12 +522,17 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 						| ATTR_CMN_MODTIME
 						| ATTR_CMN_CHGTIME
 						| ATTR_CMN_ACCTIME
+						| ATTR_CMN_FNDRINFO
 						| ATTR_CMN_OWNERID
 						| ATTR_CMN_GRPID
 						| ATTR_CMN_ACCESSMASK
 						| ATTR_CMN_FLAGS
+						| ATTR_CMN_GEN_COUNT
+						| ATTR_CMN_DOCUMENT_ID
 						| ATTR_CMN_FILEID
+						| ATTR_CMN_PARENTID
 						| ATTR_CMN_FULLPATH
+						| ATTR_CMN_ADDEDTIME
 						| ATTR_CMN_DATA_PROTECT_FLAGS
 						| ATTR_CMN_RETURNED_ATTRS,
 				.volattr = ATTR_VOL_FSTYPE | ATTR_VOL_MOUNTPOINT
@@ -599,6 +637,16 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		offset = pack_u32(buffer, offset, darwin_device(s.st_dev));
 		offset = pack_u32(buffer, offset, DARWIN_FSTYPE_APFS);
 		cmnextattr &= ~ATTR_CMNEXT_REALFSID;
+	}
+
+	if (returned.forkattr & ATTR_CMNEXT_CLONEID) {
+		offset = pack_u64(buffer, offset, s.st_ino);
+		cmnextattr &= ~ATTR_CMNEXT_CLONEID;
+	}
+
+	if (returned.forkattr & ATTR_CMNEXT_EXT_FLAGS) {
+		offset = pack_u64(buffer, offset, 0);
+		cmnextattr &= ~ATTR_CMNEXT_EXT_FLAGS;
 	}
 
 	for (uint32_t i = 0; i < reference_count; i++) {
