@@ -749,8 +749,8 @@ sys_mach_wait_until_trap(uint64_t deadline)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "mach_wait_until_trap(%p)\n", (void *)deadline);
 #endif
-	uint64_t now = commpage_absolute_time();
-	if (deadline > now) {
+	uint64_t now;
+	while ((now = commpage_absolute_time()) < deadline) {
 		uint64_t delay = deadline - now;
 		nanosleep(&(struct timespec){.tv_sec = delay / 1000000000,
 					  .tv_nsec = delay % 1000000000},
