@@ -3354,26 +3354,6 @@ sys_getentropy(void *buffer, size_t size)
 }
 
 int
-sys_ulock_wait(uint32_t operation, void *addr, uint64_t value, uint32_t timeout)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "ulock_wait(%p, %p, %p, %p)\n", (void *)operation,
-			(void *)addr, (void *)value, (void *)timeout);
-#endif
-	unimplemented();
-}
-
-int
-sys_ulock_wake(uint32_t operation, void *addr, uint64_t wake_value)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "ulock_wake(%p, %p, %p)\n", (void *)operation,
-			(void *)addr, (void *)wake_value);
-#endif
-	unimplemented();
-}
-
-int
 sys_fclonefileat(int src_fd, int dst_dirfd, user_addr_t dst, uint32_t flags)
 {
 #ifdef ENABLE_STRACE
@@ -3576,18 +3556,6 @@ sys_sys_pwritev(int fd, void *iovp, int iovcnt, off_t offset)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "sys_pwritev(%p, %p, %p, %p)\n", (void *)fd,
 			(void *)iovp, (void *)iovcnt, (void *)offset);
-#endif
-	unimplemented();
-}
-
-int
-sys_ulock_wait2(uint32_t operation, void *addr, uint64_t value,
-		uint64_t timeout, uint64_t value2)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "ulock_wait2(%p, %p, %p, %p, %p)\n", (void *)operation,
-			(void *)addr, (void *)value, (void *)timeout,
-			(void *)value2);
 #endif
 	unimplemented();
 }
@@ -4278,15 +4246,20 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 	case 0x12c:
 		return sys_enosys();
 	case 0x12d:
-		return sys_nosys();
+		return sys_psynch_mutexwait(
+				(void *)arg1, arg2, arg3, arg4, arg5);
 	case 0x12e:
-		return sys_nosys();
+		return sys_psynch_mutexdrop(
+				(void *)arg1, arg2, arg3, arg4, arg5);
 	case 0x12f:
-		return sys_nosys();
+		return sys_psynch_cvbroad((void *)arg1, arg2, arg3, arg4,
+				(void *)arg5, arg6, sp[1]);
 	case 0x130:
-		return sys_nosys();
+		return sys_psynch_cvsignal((void *)arg1, arg2, arg3, arg4,
+				(void *)arg5, arg6, sp[1], sp[2]);
 	case 0x131:
-		return sys_nosys();
+		return sys_psynch_cvwait((void *)arg1, arg2, arg3, (void *)arg4,
+				arg5, arg6, sp[1], sp[2]);
 	case 0x132:
 		return sys_nosys();
 	case 0x133:
@@ -4300,7 +4273,8 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 	case 0x137:
 		return sys_settid_with_pid(arg1, arg2);
 	case 0x138:
-		return sys_nosys();
+		return sys_psynch_cvclrprepost((void *)arg1, arg2, arg3, arg4,
+				arg5, arg6, sp[1]);
 	case 0x139:
 		return sys_aio_fsync(arg1, (void *)arg2);
 	case 0x13a:

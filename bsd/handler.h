@@ -31,6 +31,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define ULF_NO_ERRNO 0x01000000
+
 typedef void *user_addr_t;
 typedef size_t user_size_t;
 typedef ssize_t user_ssize_t;
@@ -282,6 +284,22 @@ int sys_mkdir_extended(user_addr_t path, void *uid, void *gid, int mode,
 int sys_shared_region_check_np(uint64_t *start_address);
 int sys_vm_pressure_monitor(int wait_for_pressure, int nsecs_monitored,
 		uint32_t *pages_reclaimed);
+int sys_psynch_mutexwait(user_addr_t mutex, uint32_t mgen, uint32_t ugen,
+		uint64_t tid, uint32_t flags);
+int sys_psynch_mutexdrop(user_addr_t mutex, uint32_t mgen, uint32_t ugen,
+		uint64_t tid, uint32_t flags);
+int sys_psynch_cvbroad(user_addr_t cv, uint64_t cvlsgen, uint64_t cvudgen,
+		uint32_t flags, user_addr_t mutex, uint64_t mugen,
+		uint64_t tid);
+int sys_psynch_cvsignal(user_addr_t cv, uint64_t cvlsgen, uint32_t cvugen,
+		int thread_port, user_addr_t mutex, uint64_t mugen,
+		uint64_t tid, uint32_t flags);
+int sys_psynch_cvwait(user_addr_t cv, uint64_t cvlsgen, uint32_t cvugen,
+		user_addr_t mutex, uint64_t mugen, uint32_t flags, int64_t sec,
+		uint32_t nsec);
+int sys_psynch_cvclrprepost(user_addr_t cv, uint32_t cvgen, uint32_t cvugen,
+		uint32_t cvsgen, uint32_t prepocnt, uint32_t preposeq,
+		uint32_t flags);
 int sys_getsid(uint64_t pid);
 int sys_settid_with_pid(uint64_t pid, int assume);
 int sys_aio_fsync(int op, user_addr_t aiocbp);

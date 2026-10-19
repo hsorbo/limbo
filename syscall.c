@@ -33,6 +33,7 @@
 #include <asm/processor-flags.h>
 #include <elf.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +51,7 @@
 static const uint8_t selector = SYSCALL_DISPATCH_FILTER_BLOCK;
 
 static void handle_syscall(int sig, siginfo_t *info, void *ucontext);
+static bool returns_raw_result(unsigned long syscall, uint64_t arg1);
 static void set_bsd_result(greg_t *regs, int64_t result);
 
 int
@@ -86,6 +88,10 @@ syscall_handler_install(void)
 #define SYSCALL_CLASS_MDEP (3 << 24)
 #define SYSCALL_CLASS_DIAG (4 << 24)
 
+#define BSD_SYS_ulock_wait  515
+#define BSD_SYS_ulock_wake  516
+#define BSD_SYS_ulock_wait2 544
+
 static void
 handle_syscall(int sig, siginfo_t *info, void *ucontext)
 {
@@ -117,7 +123,12 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 			&& syscall < SYSCALL_CLASS_MDEP) {
 		int64_t result = sys_bsd(syscall - SYSCALL_CLASS_UNIX, arg1,
 				arg2, arg3, arg4, arg5, arg6, sp);
-		set_bsd_result(regs, result);
+		if (returns_raw_result(syscall - SYSCALL_CLASS_UNIX, arg1)) {
+			regs[REG_EFL] &= ~X86_EFLAGS_CF;
+			regs[REG_RAX] = result;
+		} else {
+			set_bsd_result(regs, result);
+		}
 	} else if (syscall >= SYSCALL_CLASS_MDEP
 			&& syscall < SYSCALL_CLASS_DIAG) {
 		regs[REG_RAX] = sys_mdep(syscall - SYSCALL_CLASS_MDEP, arg1,
@@ -127,6 +138,19 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 		fprintf(stderr, ">> Missing system call: %#lx", syscall);
 #endif
 		abort();
+	}
+}
+
+static bool
+returns_raw_result(unsigned long syscall, uint64_t arg1)
+{
+	switch (syscall) {
+	case BSD_SYS_ulock_wait:
+	case BSD_SYS_ulock_wake:
+	case BSD_SYS_ulock_wait2:
+		return arg1 & ULF_NO_ERRNO;
+	default:
+		return false;
 	}
 }
 
