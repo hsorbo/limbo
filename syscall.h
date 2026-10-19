@@ -28,5 +28,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 int syscall_handler_install(void);
 int syscall_dispatch_enable(void);
+void syscall_set_rdx(uint64_t value);

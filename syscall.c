@@ -54,6 +54,9 @@ static void handle_syscall(int sig, siginfo_t *info, void *ucontext);
 static bool returns_raw_result(unsigned long syscall, uint64_t arg1);
 static void set_bsd_result(greg_t *regs, int64_t result);
 
+static __thread bool rdx_pending;
+static __thread uint64_t rdx_value;
+
 int
 syscall_handler_install(void)
 {
@@ -129,6 +132,10 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 		} else {
 			set_bsd_result(regs, result);
 		}
+		if (rdx_pending) {
+			regs[REG_RDX] = rdx_value;
+			rdx_pending = false;
+		}
 	} else if (syscall >= SYSCALL_CLASS_MDEP
 			&& syscall < SYSCALL_CLASS_DIAG) {
 		regs[REG_RAX] = sys_mdep(syscall - SYSCALL_CLASS_MDEP, arg1,
@@ -164,6 +171,13 @@ set_bsd_result(greg_t *regs, int64_t result)
 		regs[REG_EFL] &= ~X86_EFLAGS_CF;
 		regs[REG_RAX] = result;
 	}
+}
+
+void
+syscall_set_rdx(uint64_t value)
+{
+	rdx_value = value;
+	rdx_pending = true;
 }
 
 int

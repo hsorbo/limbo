@@ -66,7 +66,10 @@
 #include "kevent.h"
 #include "osfmk/semaphore.h"
 #include "shared_cache.h"
+#include "signo.h"
+#include "syscall.h"
 #include "sysroot.h"
+#include "thread.h"
 #include "xnu-errno.h"
 
 int
@@ -101,7 +104,16 @@ sys_fork(void)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "fork()\n");
 #endif
-	return errno_map(fork());
+	pid_t parent = getpid();
+	pid_t pid = fork();
+	if (pid == -1) {
+		return err_map(errno);
+	}
+	if (pid == 0) {
+		syscall_dispatch_enable();
+	}
+	syscall_set_rdx(pid == 0);
+	return (pid == 0) ? parent : pid;
 }
 
 user_ssize_t
@@ -145,7 +157,6 @@ sys_write(int fd, user_addr_t cbuf, user_size_t nbyte)
 #define _O_CLOEXEC   0x01000000
 
 static int open_follow(int flags);
-static int open_flags(int flags);
 static int fpathconf_value(int fd, int name);
 static struct timeval *convert_timevals(
 		const void *tptr, struct timeval *times);
@@ -153,6 +164,8 @@ static unsigned int rename_flags(uint32_t flags);
 static int rlimit_resource(uint32_t which);
 static uint64_t rlimit_to_darwin(rlim_t value);
 static rlim_t rlimit_from_darwin(uint64_t value);
+static int wait_status(int status);
+static int wait_options(int options);
 
 int
 sys_open(user_addr_t path, int flags, int mode)
@@ -175,7 +188,7 @@ open_follow(int flags)
 			: 0;
 }
 
-static int
+int
 open_flags(int flags)
 {
 	int cflags = 0;
@@ -233,11 +246,49 @@ sys_wait4(int pid, user_addr_t status, int options, user_addr_t rusage)
 	fprintf(stderr, "wait4(%p, %p, %p, %p)\n", (void *)pid, (void *)status,
 			(void *)options, (void *)rusage);
 #endif
-	/* rusage not supported, yet */
-	if (rusage != NULL) {
-		unimplemented();
+	struct rusage usage;
+	int result = wait4(pid, status, wait_options(options), &usage);
+	if (result == -1) {
+		return err_map(errno);
 	}
-	return errno_map(wait4(pid, status, options, NULL));
+
+	if (rusage != NULL) {
+		usage.ru_maxrss *= 1024;
+		memcpy(rusage, &usage, sizeof(usage));
+	}
+	if (status != NULL) {
+		*(int *)status = wait_status(*(int *)status);
+	}
+	return result;
+}
+
+#define _WCONTINUED 0x10
+#define _WNOWAIT    0x20
+
+static int
+wait_status(int status)
+{
+	if (WIFSIGNALED(status)) {
+		return (status & ~0x7f) | signo_from_linux(WTERMSIG(status));
+	}
+	if (WIFSTOPPED(status)) {
+		return (status & ~0xff00)
+				| (signo_from_linux(WSTOPSIG(status)) << 8);
+	}
+	return status;
+}
+
+static int
+wait_options(int options)
+{
+	int result = options & (WNOHANG | WUNTRACED);
+	if (options & _WCONTINUED) {
+		result |= WCONTINUED;
+	}
+	if (options & _WNOWAIT) {
+		result |= WNOWAIT;
+	}
+	return result;
 }
 
 int
@@ -483,7 +534,11 @@ sys_kill(int pid, int signum, int posix)
 	fprintf(stderr, "kill(%p, %p, %p)\n", (void *)pid, (void *)signum,
 			(void *)posix);
 #endif
-	unimplemented();
+	int linux_signum = signo_to_linux(signum);
+	if (signum != 0 && linux_signum == 0) {
+		return _EINVAL;
+	}
+	return errno_map(kill(pid, linux_signum));
 }
 
 int
@@ -510,7 +565,12 @@ sys_pipe(int pipefd[2])
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "pipe()\n");
 #endif
-	return errno_map(pipe(pipefd));
+	int fds[2];
+	if (pipe(fds) == -1) {
+		return err_map(errno);
+	}
+	syscall_set_rdx(fds[1]);
+	return fds[0];
 }
 
 int
@@ -1785,19 +1845,6 @@ sys_initgroups(uint32_t gidsetsize, void *gidset, int gmuid)
 }
 
 int
-sys_posix_spawn(void *pid, const char *path, void *adesc, char **argv,
-		char **envp)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "posix_spawn(%p, \"%s\", %p, %p, %p)\n", (void *)pid,
-			path, (void *)adesc, (void *)argv, (void *)envp);
-#endif
-	/* Spawn actions not supported, yet */
-	(void)adesc;
-	return errno_map(posix_spawn(pid, path, NULL, NULL, argv, envp));
-}
-
-int
 sys_ffsctl(int fd, uint64_t cmd, void *data, uint32_t options)
 {
 #ifdef ENABLE_STRACE
@@ -2348,7 +2395,10 @@ sys___pthread_kill(int thread_port, int sig)
 	fprintf(stderr, "__pthread_kill(%p, %p)\n", (void *)thread_port,
 			(void *)sig);
 #endif
-	unimplemented();
+	if ((mach_port_name_t)thread_port != thread_current()->port) {
+		unimplemented();
+	}
+	return errno_map(tgkill(getpid(), gettid(), signo_to_linux(sig)));
 }
 
 int
