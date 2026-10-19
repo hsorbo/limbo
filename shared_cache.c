@@ -40,6 +40,7 @@
 #include <unistd.h>
 
 #include "shared_cache.h"
+#include "sysroot.h"
 
 void *shared_cache_start = NULL;
 
@@ -57,7 +58,9 @@ static void rebase_page(dyld_cache_slide_info2_t *info, uint64_t address);
 int
 shared_cache_mmap(const char *path)
 {
-	int f = open(path, O_RDONLY);
+	char buffer[PATH_MAX];
+	const char *host_path = sysroot_host_path(path, 0, buffer);
+	int f = open(host_path, O_RDONLY);
 	if (f == -1) {
 		perror("open");
 		return 1;
@@ -70,7 +73,7 @@ shared_cache_mmap(const char *path)
 	}
 
 	if (reserve_shared_region(&header) || map_cache_file(f, &header)
-			|| map_subcaches(f, path, &header)
+			|| map_subcaches(f, host_path, &header)
 			|| map_dynamic_data(f, path, &header)) {
 		goto error;
 	}

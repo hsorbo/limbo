@@ -44,6 +44,7 @@
 #include "linker.h"
 #include "shared_cache.h"
 #include "syscall.h"
+#include "sysroot.h"
 
 /* Temporary TLS for dyld */
 static char dyld_ls[0x1000];
@@ -91,7 +92,7 @@ run(int argc, char *argv[], char *envp[])
 		return 1;
 	}
 
-	if (syscall_handler_install()) {
+	if (sysroot_open() || syscall_handler_install()) {
 		goto error;
 	}
 
@@ -114,8 +115,11 @@ run(int argc, char *argv[], char *envp[])
 	}
 
 	/* Map the target executable's interpreter (dyld) */
+	char dylinker_host_path[PATH_MAX];
 	uintptr_t entry = 0;
-	uint8_t *dyld_base = linker_link(dylinker_path, NULL, &entry);
+	uint8_t *dyld_base = linker_link(
+			sysroot_host_path(dylinker_path, 0, dylinker_host_path),
+			NULL, &entry);
 	if (dyld_base == NULL || entry == 0) {
 		fprintf(stderr,
 				"limbo: failed to load binary "
@@ -168,7 +172,7 @@ build_stack(uint8_t *exe_base, const char *path, int argc, char *argv[],
 
 	char *apple[4];
 	uint32_t applec = sizeof(apple) / sizeof(apple[0]);
-	asprintf(&apple[0], "executable_path=%s", path);
+	asprintf(&apple[0], "executable_path=%s", sysroot_guest_path(path));
 	asprintf(&apple[1], "stack_guard=0x%lx", entropy[0]);
 	asprintf(&apple[2], "malloc_entropy=0x%lx,0x%lx", entropy[1],
 			entropy[2]);

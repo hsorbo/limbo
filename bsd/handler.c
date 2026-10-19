@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -59,6 +60,7 @@
 
 #include "handler.h"
 #include "shared_cache.h"
+#include "sysroot.h"
 #include "xnu-errno.h"
 
 int
@@ -136,6 +138,8 @@ sys_write(int fd, user_addr_t cbuf, user_size_t nbyte)
 #define _O_SYMLINK   0x00200000
 #define _O_CLOEXEC   0x01000000
 
+static int open_follow(int flags);
+
 int
 sys_open(user_addr_t path, int flags, int mode)
 {
@@ -143,6 +147,7 @@ sys_open(user_addr_t path, int flags, int mode)
 	fprintf(stderr, "open(\"%s\", %p, %p)\n", (char *)path, (void *)flags,
 			(void *)mode);
 #endif
+	char buffer[PATH_MAX];
 	int cflags = 0;
 	if (flags & _O_RDONLY)
 		cflags |= O_RDONLY;
@@ -178,7 +183,17 @@ sys_open(user_addr_t path, int flags, int mode)
 		cflags |= O_SYMLINK; */
 	if (flags & _O_CLOEXEC)
 		cflags |= O_CLOEXEC;
-	return errno_map(open((char *)path, (int)cflags, mode));
+	return errno_map(open(
+			sysroot_host_path(path, open_follow(flags), buffer),
+			(int)cflags, mode));
+}
+
+static int
+open_follow(int flags)
+{
+	return (flags & (_O_NOFOLLOW | _O_SYMLINK | _O_EXCL))
+			? AT_SYMLINK_NOFOLLOW
+			: 0;
 }
 
 int
@@ -211,7 +226,11 @@ sys_link(user_addr_t oldpath, user_addr_t newpath)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "link(%p, %p)\n", (void *)oldpath, (void *)newpath);
 #endif
-	return errno_map(link((char *)oldpath, (char *)newpath));
+	char old_buffer[PATH_MAX], new_buffer[PATH_MAX];
+	return errno_map(link(sysroot_host_path(oldpath, AT_SYMLINK_NOFOLLOW,
+					      old_buffer),
+			sysroot_host_path(newpath, AT_SYMLINK_NOFOLLOW,
+					new_buffer)));
 }
 
 int
@@ -220,7 +239,9 @@ sys_unlink(user_addr_t path)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "unlink(%p)\n", (void *)path);
 #endif
-	return errno_map(unlink((char *)path));
+	char buffer[PATH_MAX];
+	return errno_map(unlink(
+			sysroot_host_path(path, AT_SYMLINK_NOFOLLOW, buffer)));
 }
 
 int
@@ -229,7 +250,8 @@ sys_chdir(user_addr_t path)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "chdir(\"%s\")\n", (char *)path);
 #endif
-	return errno_map(chdir((char *)path));
+	char buffer[PATH_MAX];
+	return errno_map(chdir(sysroot_host_path(path, 0, buffer)));
 }
 
 int
@@ -388,7 +410,7 @@ int
 sys_access(user_addr_t path, int flags)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "access(%p, %p)\n", (void *)path, (void *)flags);
+	fprintf(stderr, "access(\"%s\", %#x)\n", (char *)path, flags);
 #endif
 	int cflags = 0;
 	if (flags & _F_OK)
@@ -400,7 +422,8 @@ sys_access(user_addr_t path, int flags)
 	if (flags & _R_OK)
 		cflags |= R_OK;
 
-	return errno_map(access(path, cflags));
+	char buffer[PATH_MAX];
+	return errno_map(access(sysroot_host_path(path, 0, buffer), cflags));
 }
 
 int
@@ -618,7 +641,9 @@ sys_symlink(char *path, char *link)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "symlink(%p, %p)\n", (void *)path, (void *)link);
 #endif
-	return errno_map(symlink(path, link));
+	char buffer[PATH_MAX];
+	return errno_map(symlink(path,
+			sysroot_host_path(link, AT_SYMLINK_NOFOLLOW, buffer)));
 }
 
 int
@@ -628,7 +653,10 @@ sys_readlink(char *path, char *buf, int count)
 	fprintf(stderr, "readlink(%p, %p, %p)\n", (void *)path, (void *)buf,
 			(void *)count);
 #endif
-	return errno_map(readlink(path, buf, count));
+	char buffer[PATH_MAX];
+	return errno_map(readlink(
+			sysroot_host_path(path, AT_SYMLINK_NOFOLLOW, buffer),
+			buf, count));
 }
 
 int
@@ -638,7 +666,9 @@ sys_execve(char *fname, char **argp, char **envp)
 	fprintf(stderr, "execve(%s, %p, %p)\n", fname, (void *)argp,
 			(void *)envp);
 #endif
-	return errno_map(execve(fname, argp, envp));
+	char buffer[PATH_MAX];
+	return errno_map(execve(
+			sysroot_host_path(fname, 0, buffer), argp, envp));
 }
 
 int
@@ -1014,7 +1044,10 @@ sys_rename(char *from, char *to)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "rename(%p, %p)\n", (void *)from, (void *)to);
 #endif
-	return errno_map(rename(from, to));
+	char from_buffer[PATH_MAX], to_buffer[PATH_MAX];
+	return errno_map(rename(sysroot_host_path(from, AT_SYMLINK_NOFOLLOW,
+						from_buffer),
+			sysroot_host_path(to, AT_SYMLINK_NOFOLLOW, to_buffer)));
 }
 
 int
@@ -1072,7 +1105,10 @@ sys_mkdir(user_addr_t path, int mode)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "mkdir(\"%s\", %p)\n", (char *)path, (void *)mode);
 #endif
-	return errno_map(mkdir((char *)path, mode));
+	char buffer[PATH_MAX];
+	return errno_map(mkdir(
+			sysroot_host_path(path, AT_SYMLINK_NOFOLLOW, buffer),
+			mode));
 }
 
 int
@@ -1081,7 +1117,9 @@ sys_rmdir(char *path)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "rmdir(%p)\n", (void *)path);
 #endif
-	return errno_map(rmdir(path));
+	char buffer[PATH_MAX];
+	return errno_map(rmdir(
+			sysroot_host_path(path, AT_SYMLINK_NOFOLLOW, buffer)));
 }
 
 int
@@ -1446,7 +1484,8 @@ sys_truncate(char *path, off_t length)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "truncate(%p, %p)\n", (void *)path, (void *)length);
 #endif
-	return errno_map(truncate(path, length));
+	char buffer[PATH_MAX];
+	return errno_map(truncate(sysroot_host_path(path, 0, buffer), length));
 }
 
 int
@@ -3052,7 +3091,10 @@ sys_openat(int fd, user_addr_t path, int flags, int mode)
 			(char *)path, (void *)flags, (void *)mode);
 #endif
 	/* TODO: Convert flags */
-	return errno_map(openat(fd, (char *)path, flags, mode));
+	char buffer[PATH_MAX];
+	return errno_map(openat(fd,
+			sysroot_host_path(path, open_follow(flags), buffer),
+			flags, mode));
 }
 
 int
