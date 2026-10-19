@@ -33,6 +33,7 @@
 #include <unistd.h>
 
 #include "ipc.h"
+#include "shared_cache.h"
 
 kern_return_t
 host_info(host_t host, host_flavor_t flavor, host_info_t host_info_out,
@@ -56,7 +57,7 @@ host_info(host_t host, host_flavor_t flavor, host_info_t host_info_out,
 				? UINT32_MAX
 				: memory_size;
 		basic_info->cpu_type = CPU_TYPE_X86_64;
-		basic_info->cpu_subtype = CPU_SUBTYPE_X86_64_ALL;
+		basic_info->cpu_subtype = shared_cache_cpu_subtype;
 		basic_info->cpu_threadtype = CPU_THREADTYPE_NONE;
 		basic_info->physical_cpu = cpus;
 		basic_info->physical_cpu_max = cpus;
@@ -76,7 +77,7 @@ host_info(host_t host, host_flavor_t flavor, host_info_t host_info_out,
 		host_preferred_user_arch_t preferred_arch
 				= (host_preferred_user_arch_t)host_info_out;
 		preferred_arch->cpu_type = CPU_TYPE_X86_64;
-		preferred_arch->cpu_subtype = CPU_SUBTYPE_X86_64_ALL;
+		preferred_arch->cpu_subtype = shared_cache_cpu_subtype;
 		*host_info_outCnt = HOST_PREFERRED_USER_ARCH_COUNT;
 	} break;
 	default:

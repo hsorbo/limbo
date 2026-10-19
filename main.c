@@ -98,8 +98,7 @@ run(int argc, char *argv[], char *envp[])
 
 	/* Map the shared cache into our memory space, persisted across fork()
 	 */
-	if (shared_cache_mmap(
-			    "/System/Library/dyld/dyld_shared_cache_x86_64")) {
+	if (shared_cache_mmap()) {
 		fprintf(stderr,
 				"limbo: could not map and rebase shared "
 				"cache\n");

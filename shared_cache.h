@@ -156,5 +156,6 @@ typedef struct {
 } dyld_cache_slide_info2_t;
 
 extern void *shared_cache_start;
+extern int shared_cache_cpu_subtype;
 
-int shared_cache_mmap(const char *path);
+int shared_cache_mmap(void);

@@ -39,6 +39,7 @@
 
 #include "handler.h"
 #include "process.h"
+#include "shared_cache.h"
 #include "xnu-errno.h"
 
 #define CTL_UNSPEC 0
@@ -134,6 +135,7 @@ static int read_hostname(void *old, size_t *oldlenp);
 static int read_boottime(void *old, size_t *oldlenp);
 static int read_ncpu(void *old, size_t *oldlenp);
 static int read_memsize(void *old, size_t *oldlenp);
+static int read_cpusubtype(void *old, size_t *oldlenp);
 
 static const struct sysctl_node nodes[] = {
 		{"kern.ostype", {CTL_KERN, KERN_OSTYPE}, SYSCTL_STRING,
@@ -186,8 +188,8 @@ static const struct sysctl_node nodes[] = {
 				.reader = read_ncpu},
 		{"hw.cachelinesize", {0, 0}, SYSCTL_QUAD, .number = 64},
 		{"hw.cputype", {0, 0}, SYSCTL_INT, .number = CPU_TYPE_X86_64},
-		{"hw.cpusubtype", {0, 0}, SYSCTL_INT,
-				.number = CPU_SUBTYPE_X86_64_ALL},
+		{"hw.cpusubtype", {0, 0}, SYSCTL_READER,
+				.reader = read_cpusubtype},
 		{"hw.cpu64bit_capable", {0, 0}, SYSCTL_INT, .number = 1},
 		{"security.mac.lockdown_mode_state", {0, 0}, SYSCTL_INT,
 				.number = 0},
@@ -407,6 +409,13 @@ read_memsize(void *old, size_t *oldlenp)
 {
 	int64_t memsize = (int64_t)sysconf(_SC_PHYS_PAGES) * PAGE_SIZE;
 	return read_number(memsize, sizeof(int64_t), old, oldlenp);
+}
+
+static int
+read_cpusubtype(void *old, size_t *oldlenp)
+{
+	return read_number(shared_cache_cpu_subtype, sizeof(int32_t), old,
+			oldlenp);
 }
 
 static int

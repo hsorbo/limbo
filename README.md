@@ -58,7 +58,9 @@ which all need to be copied. On an Intel Mac they live in
 `/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld`; on an Apple Silicon
 Mac the x86_64 cache is part of the Rosetta cryptex, in
 `/System/Volumes/Preboot/Cryptexes/Rosetta/System/Library/dyld`. In the sysroot
-they go directly in `/System/Library/dyld`.
+they go directly in `/System/Library/dyld`. Intel Macs only ship the Haswell
+cache, `dyld_shared_cache_x86_64h`, which Limbo uses when
+`dyld_shared_cache_x86_64` is absent.
 
 On the Limbo host:
 ```

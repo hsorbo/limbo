@@ -29,6 +29,7 @@
 #include <assert.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <mach/machine.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -43,6 +44,7 @@
 #include "sysroot.h"
 
 void *shared_cache_start = NULL;
+int shared_cache_cpu_subtype = CPU_SUBTYPE_X86_64_ALL;
 
 static int reserve_shared_region(dyld_cache_header_t *header);
 static int map_cache_file(int f, dyld_cache_header_t *header);
@@ -56,10 +58,17 @@ static void rebase_chain(uint8_t *page_content, uint16_t page_start_offset,
 static void rebase_page(dyld_cache_slide_info2_t *info, uint64_t address);
 
 int
-shared_cache_mmap(const char *path)
+shared_cache_mmap(void)
 {
 	char buffer[PATH_MAX];
+	const char *path = "/System/Library/dyld/dyld_shared_cache_x86_64";
 	const char *host_path = sysroot_host_path(path, 0, buffer);
+	if (access(host_path, F_OK) != 0) {
+		path = "/System/Library/dyld/dyld_shared_cache_x86_64h";
+		host_path = sysroot_host_path(path, 0, buffer);
+		shared_cache_cpu_subtype = CPU_SUBTYPE_X86_64_H;
+	}
+
 	int f = open(host_path, O_RDONLY);
 	if (f == -1) {
 		perror("open");
