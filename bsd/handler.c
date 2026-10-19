@@ -58,6 +58,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 
+#include "commpage.h"
 #include "handler.h"
 #include "shared_cache.h"
 #include "sysroot.h"
@@ -937,6 +938,11 @@ sys_sigsuspend(void *mask)
 	unimplemented();
 }
 
+struct __darwin_user64_timeval {
+	int64_t tv_sec;
+	int32_t tv_usec;
+};
+
 int
 sys_gettimeofday(void *tp, void *tzp, uint64_t *mach_absolute_time)
 {
@@ -944,12 +950,20 @@ sys_gettimeofday(void *tp, void *tzp, uint64_t *mach_absolute_time)
 	fprintf(stderr, "gettimeofday(%p, %p, %p)\n", (void *)tp, (void *)tzp,
 			(void *)mach_absolute_time);
 #endif
-	/* TODO: For syslog, unimplemented for now */
-	if (tzp == NULL && mach_absolute_time == NULL) {
-		return 0;
+	if (tp != NULL) {
+		struct timeval now;
+		gettimeofday(&now, NULL);
+		struct __darwin_user64_timeval *result = tp;
+		result->tv_sec = now.tv_sec;
+		result->tv_usec = now.tv_usec;
 	}
-
-	unimplemented();
+	if (tzp != NULL) {
+		memset(tzp, 0, 2 * sizeof(int));
+	}
+	if (mach_absolute_time != NULL) {
+		*mach_absolute_time = commpage_absolute_time();
+	}
+	return 0;
 }
 
 int

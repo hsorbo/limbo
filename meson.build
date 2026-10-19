@@ -40,6 +40,7 @@ subdir('osfmk')
 
 executable('limbo',
   sources: [
+    'commpage.c',
     'linker.c',
     'main.c',
     'shared_cache.c',

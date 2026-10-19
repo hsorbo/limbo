@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -50,10 +51,12 @@
 #include <sys/prctl.h>
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
 
 #include "bootstrap/bootstrap.h" /*__ReplyUnion__bootstrap_subsystem */
+#include "commpage.h"
 #include "handler.h"
 #include "port.h"
 
@@ -749,8 +752,10 @@ sys_mach_timebase_info_trap(void *info)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "mach_timebase_info_trap(%p)\n", (void *)info);
 #endif
-	/* TODO: Handle */
-	return KERN_FAILURE;
+	uint32_t *numer_denom = info;
+	numer_denom[0] = 1;
+	numer_denom[1] = 1;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -759,7 +764,14 @@ sys_mach_wait_until_trap(uint64_t deadline)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "mach_wait_until_trap(%p)\n", (void *)deadline);
 #endif
-	unimplemented();
+	uint64_t now = commpage_absolute_time();
+	if (deadline > now) {
+		uint64_t delay = deadline - now;
+		nanosleep(&(struct timespec){.tv_sec = delay / 1000000000,
+					  .tv_nsec = delay % 1000000000},
+				NULL);
+	}
+	return KERN_SUCCESS;
 }
 
 kern_return_t

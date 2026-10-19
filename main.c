@@ -55,7 +55,6 @@ static int run(int argc, char *argv[], char *envp[]);
 static uintptr_t build_stack(uint8_t *exe_base, const char *path, int argc,
 		char *argv[], char *envp[]);
 static int restart_without_aslr(char *argv[], char *envp[]);
-static int commpage_mmap(void);
 
 int
 main(int argc, char *argv[], char *envp[])
@@ -213,27 +212,4 @@ build_stack(uint8_t *exe_base, const char *path, int argc, char *argv[],
 	*sp++ = 0; /* End of environment */
 
 	return stack_base;
-}
-
-static int
-commpage_mmap(void)
-{
-	void *commpage = mmap((void *)_COMM_PAGE_START_ADDRESS,
-			_COMM_PAGE_AREA_LENGTH, PROT_READ | PROT_WRITE,
-			MAP_PRIVATE | MAP_FIXED | MAP_ANON, -1, 0);
-	if (commpage == MAP_FAILED) {
-		perror("mmap");
-		return 1;
-	}
-
-	/* TODO: Initialize the entire commpage */
-	*(uint16_t *)_COMM_PAGE_VERSION = _COMM_PAGE_THIS_VERSION;
-	*(uint32_t *)_COMM_PAGE_NT_GENERATION = 1;
-	*(uint8_t *)_COMM_PAGE_ACTIVE_CPUS = 12;
-	*(uint8_t *)_COMM_PAGE_LOGICAL_CPUS = 24;
-	*(uint8_t *)_COMM_PAGE_PHYSICAL_CPUS = 12;
-	*(uint8_t *)_COMM_PAGE_USER_PAGE_SHIFT_64 = 12;
-	*(uint64_t *)_COMM_PAGE_MEMORY_SIZE = 17179869184;
-
-	return 0;
 }

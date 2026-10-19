@@ -78,3 +78,6 @@ static const size_t _COMM_PAGE_AREA_LENGTH = 0x1000;
 #define _COMM_PAGE_NEWTIMEOFDAY_DATA (_COMM_PAGE_START_ADDRESS + 0x0D0)
 #define _COMM_PAGE_DYLD_FLAGS        (_COMM_PAGE_START_ADDRESS + 0x100)
 #define _COMM_PAGE_END               (_COMM_PAGE_START_ADDRESS + 0xfff)
+
+int commpage_mmap(void);
+uint64_t commpage_absolute_time(void);
