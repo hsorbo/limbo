@@ -42,6 +42,7 @@
 #include <mach/i386/thread_status.h>
 #include <mach/mach.h>
 #include <mach/machine/ndr_def.h> /* NDR_Record */
+#include <sched.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,6 +62,7 @@
 #include "mach_vm.h"
 #include "mk_timer.h"
 #include "semaphore.h"
+#include "thread.h"
 
 int
 sys_kern_invalid(void)
@@ -99,7 +101,7 @@ sys_thread_self_trap(void)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "thread_self_trap()\n");
 #endif
-	return ipc_kobject_copy_send(ipc_kobject_name(IPC_KOBJECT_THREAD));
+	return ipc_kobject_copy_send(thread_current()->port);
 }
 
 mach_port_name_t
@@ -581,7 +583,8 @@ sys_swtch_pri(int pri)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "swtch_pri(%p)\n", (void *)pri);
 #endif
-	unimplemented();
+	sched_yield();
+	return FALSE;
 }
 
 boolean_t
@@ -590,8 +593,11 @@ sys_swtch(void)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "swtch()\n");
 #endif
-	unimplemented();
+	sched_yield();
+	return FALSE;
 }
+
+#define SWITCH_OPTION_OSLOCK_WAIT 5
 
 kern_return_t
 sys_thread_switch(mach_port_name_t thread_name, int option,
@@ -601,7 +607,19 @@ sys_thread_switch(mach_port_name_t thread_name, int option,
 	fprintf(stderr, "thread_switch(%p, %p, %p)\n", (void *)thread_name,
 			(void *)option, (void *)option_time);
 #endif
-	unimplemented();
+	switch (option) {
+	case SWITCH_OPTION_WAIT:
+	case SWITCH_OPTION_OSLOCK_WAIT: {
+		struct timespec duration = {
+				.tv_sec = option_time / 1000,
+				.tv_nsec = (option_time % 1000) * 1000000,
+		};
+		nanosleep(&duration, NULL);
+	} break;
+	default:
+		sched_yield();
+	}
+	return KERN_SUCCESS;
 }
 
 mach_port_name_t

@@ -41,6 +41,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "bsd/kevent.h"
 #include "ipc.h"
 
 typedef enum {
@@ -122,6 +123,7 @@ static void *copy_ool(const void *address, mach_msg_size_t size);
 static void enqueue(struct ipc_port *port, struct ipc_kmsg *kmsg);
 static void release_unused_entries(mach_msg_header_t *header);
 static void release_unused_entry(mach_port_name_t name);
+static void unlock_and_notify_arrival(struct ipc_port *port);
 static void serve_kobject(mach_msg_header_t *request);
 static mach_msg_header_t *kobject_server(mach_msg_header_t *request);
 static const struct mig_subsystem *kobject_subsystem(mach_msg_id_t id);
@@ -207,6 +209,20 @@ ipc_kobject_destroy(mach_port_name_t name)
 	pthread_mutex_unlock(&lock);
 }
 
+bool
+ipc_port_peek(mach_port_name_t name)
+{
+	pthread_mutex_lock(&lock);
+	struct ipc_entry *entry = lookup(name);
+	bool pending = entry != NULL
+			&& (entry->type
+					& (MACH_PORT_TYPE_RECEIVE
+							| MACH_PORT_TYPE_PORT_SET))
+			&& port_with_message(entry) != NULL;
+	pthread_mutex_unlock(&lock);
+	return pending;
+}
+
 static mach_port_name_t
 kobject_send_right(ipc_kobject_type_t type)
 {
@@ -272,7 +288,7 @@ send(mach_msg_header_t *msg, mach_msg_size_t size, ipc_side_t sender)
 	if (dest->kotype == IPC_KOBJECT_NONE) {
 		enqueue(dest, kmsg);
 		release_unused_entries(kmsg->header);
-		pthread_mutex_unlock(&lock);
+		unlock_and_notify_arrival(dest);
 		return MACH_MSG_SUCCESS;
 	}
 
@@ -583,6 +599,20 @@ release_unused_entry(mach_port_name_t name)
 	struct ipc_entry *entry = lookup(name);
 	if (entry != NULL) {
 		entry_release_if_unused(entry);
+	}
+}
+
+static void
+unlock_and_notify_arrival(struct ipc_port *port)
+{
+	mach_port_name_t name = port->name;
+	mach_port_name_t pset = (port->pset != NULL) ? port->pset->name
+						     : MACH_PORT_NULL;
+	pthread_mutex_unlock(&lock);
+
+	kevent_machport_arrival(name);
+	if (pset != MACH_PORT_NULL) {
+		kevent_machport_arrival(pset);
 	}
 }
 
@@ -1061,6 +1091,11 @@ ipc_port_move_member(mach_port_name_t member, mach_port_name_t pset)
 				? pset_entry->port
 				: NULL;
 		pthread_cond_broadcast(&arrival);
+		if (pset_entry != NULL
+				&& member_entry->port->messages != NULL) {
+			unlock_and_notify_arrival(member_entry->port);
+			return kr;
+		}
 	}
 	pthread_mutex_unlock(&lock);
 	return kr;

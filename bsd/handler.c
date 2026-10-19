@@ -41,6 +41,7 @@
 #include <mach-o/loader.h>
 #include <mach/i386/thread_status.h>
 #include <mach/mach.h>
+#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -88,7 +89,7 @@ int __attribute__((noreturn)) sys_exit(int rval)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "exit(%#x)\n", rval);
 #endif
-	exit(rval);
+	_exit(rval);
 }
 
 int
@@ -2316,7 +2317,10 @@ sys___disable_threadsignal(int value)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "__disable_threadsignal(%p)\n", (void *)value);
 #endif
-	unimplemented();
+	sigset_t mask;
+	sigfillset(&mask);
+	sigdelset(&mask, SIGSYS);
+	return -pthread_sigmask(SIG_BLOCK, &mask, NULL);
 }
 
 int
@@ -2346,7 +2350,39 @@ sys___semwait_signal(int cond_sem, int mutex_sem, int timeout, int relative,
 			(void *)cond_sem, (void *)mutex_sem, (void *)timeout,
 			(void *)relative, (void *)tv_sec, (void *)tv_nsec);
 #endif
-	unimplemented();
+	kern_return_t kr;
+	if (timeout) {
+		if (!relative) {
+			struct timespec now;
+			clock_gettime(CLOCK_REALTIME, &now);
+			int64_t remaining = (tv_sec - now.tv_sec) * 1000000000LL
+					+ (tv_nsec - now.tv_nsec);
+			remaining = (remaining > 0) ? remaining : 0;
+			tv_sec = remaining / 1000000000LL;
+			tv_nsec = remaining % 1000000000LL;
+		}
+		mach_timespec_t interval
+				= {.tv_sec = tv_sec, .tv_nsec = tv_nsec};
+		kr = (mutex_sem != MACH_PORT_NULL)
+				? semaphore_timedwait_signal(
+						  cond_sem, mutex_sem, interval)
+				: semaphore_timedwait(cond_sem, interval);
+	} else {
+		kr = (mutex_sem != MACH_PORT_NULL)
+				? semaphore_wait_signal(cond_sem, mutex_sem)
+				: semaphore_wait(cond_sem);
+	}
+
+	switch (kr) {
+	case KERN_SUCCESS:
+		return 0;
+	case KERN_OPERATION_TIMED_OUT:
+		return _ETIMEDOUT;
+	case KERN_ABORTED:
+		return _EINTR;
+	default:
+		return _EINVAL;
+	}
 }
 
 int
@@ -2458,30 +2494,6 @@ sys_auditctl(char *path)
 	unimplemented();
 }
 
-user_addr_t
-sys_bsdthread_create(user_addr_t func, user_addr_t func_arg, user_addr_t stack,
-		user_addr_t pthread, uint32_t flags)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "bsdthread_create(%p, %p, %p, %p, %p)\n", (void *)func,
-			(void *)func_arg, (void *)stack, (void *)pthread,
-			(void *)flags);
-#endif
-	unimplemented();
-}
-
-int
-sys_bsdthread_terminate(user_addr_t stackaddr, size_t freesize, uint32_t port,
-		uint32_t sem)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "bsdthread_terminate(%p, %p, %p, %p)\n",
-			(void *)stackaddr, (void *)freesize, (void *)port,
-			(void *)sem);
-#endif
-	unimplemented();
-}
-
 int
 sys_kqueue(void)
 {
@@ -2513,54 +2525,6 @@ sys_lchown(user_addr_t path, void *owner, void *group)
 	unimplemented();
 }
 
-#define WORKQ_FEATURE_WORKLOOP 0x80 // Support for direct workloop requests
-// #define WORKQ_FEATURE_KEVENT        0x40
-
-int
-sys_bsdthread_register(user_addr_t threadstart, user_addr_t wqthread,
-		uint32_t flags, user_addr_t stack_addr_hint,
-		user_addr_t targetconc_ptr, uint32_t dispatchqueue_offset,
-		uint32_t tsd_offset)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "bsdthread_register(%p, %p, %p, %p, %p, %p, %p)\n",
-			(void *)threadstart, (void *)wqthread, (void *)flags,
-			(void *)stack_addr_hint, (void *)targetconc_ptr,
-			(void *)dispatchqueue_offset, (void *)tsd_offset);
-#endif
-	/* TODO: Figure out what to do here */
-	/* libpthread requires these during feature detection */
-	/* PTHREAD_FEATURE_FINEPRIO |
-	/ PTHREAD_FEATURE_BSDTHREADCTL |
-	/ PTHREAD_FEATURE_SETSELF |
-	/ PTHREAD_FEATURE_QOS_MAINTENANCE |
-	/ PTHREAD_FEATURE_QOS_DEFAULT */
-	/* and libdispatch requires WORKQ_FEATURE_WORKLOOP */
-	return 0x4000001E | WORKQ_FEATURE_WORKLOOP;
-}
-
-int
-sys_workq_open(void)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "workq_open()\n");
-#endif
-	// unimplemented();
-	return KERN_SUCCESS;
-}
-
-int
-sys_workq_kernreturn(int options, user_addr_t item, int affinity, int prio)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "workq_kernreturn(%p, %p, %p, %p)\n", (void *)options,
-			(void *)item, (void *)affinity, (void *)prio);
-#endif
-	return KERN_SUCCESS;
-	// return _EINVAL;
-	// unimplemented();
-}
-
 int
 sys_kevent64(int fd, void *changelist, int nchanges, void *eventlist,
 		int nevents, void *flags, void *timeout)
@@ -2573,50 +2537,12 @@ sys_kevent64(int fd, void *changelist, int nchanges, void *eventlist,
 	unimplemented();
 }
 
-uint64_t
-sys_thread_selfid(void)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "thread_selfid()\n");
-#endif
-	return 0xb17b00b7;
-}
-
 int
 sys_ledger(int cmd, void *arg1, void *arg2, void *arg3)
 {
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "ledger(%p, %p, %p, %p)\n", (void *)cmd, (void *)arg1,
 			(void *)arg2, (void *)arg3);
-#endif
-	unimplemented();
-}
-
-int
-sys_kevent_qos(int fd, void *changelist, int nchanges, void *eventlist,
-		int nevents, void *data_out, size_t *data_available,
-		void *flags)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "kevent_qos(%p, %p, %p, %p, %p, %p, %p, %p)\n",
-			(void *)fd, (void *)changelist, (void *)nchanges,
-			(void *)eventlist, (void *)nevents, (void *)data_out,
-			(void *)data_available, (void *)flags);
-#endif
-	// unimplemented();
-	return KERN_SUCCESS;
-}
-
-int
-sys_kevent_id(uint64_t id, void *changelist, int nchanges, void *eventlist,
-		int nevents, void *data_out, size_t *data_available,
-		void *flags)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "kevent_id(%p, %p, %p, %p, %p, %p, %p, %p)\n",
-			(void *)id, (void *)changelist, (void *)nchanges,
-			(void *)eventlist, (void *)nevents, (void *)data_out,
-			(void *)data_available, (void *)flags);
 #endif
 	unimplemented();
 }
@@ -3212,23 +3138,6 @@ sys_proc_trace_log(uint64_t pid, uint64_t uniqueid)
 	unimplemented();
 }
 
-#define BSDTHREAD_CTL_WORKQ_ALLOW_KILL 0x1000
-
-int
-sys_bsdthread_ctl(user_addr_t cmd, user_addr_t arg1, user_addr_t arg2,
-		user_addr_t arg3)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "bsdthread_ctl(%p, %p, %p, %p)\n", (void *)cmd,
-			(void *)arg1, (void *)arg2, (void *)arg3);
-#endif
-	if ((uint64_t)cmd == BSDTHREAD_CTL_WORKQ_ALLOW_KILL) {
-		return KERN_SUCCESS;
-	}
-
-	unimplemented();
-}
-
 int
 sys_openbyid_np(user_addr_t fsid, user_addr_t objid, int oflags)
 {
@@ -3562,17 +3471,6 @@ sys_os_fault_with_payload(uint32_t reason_namespace, uint64_t reason_code,
 			(void *)reason_namespace, (void *)reason_code,
 			(void *)payload, (void *)payload_size,
 			(void *)reason_string, (void *)reason_flags);
-#endif
-	unimplemented();
-}
-
-int
-sys_kqueue_workloop_ctl(
-		user_addr_t cmd, uint64_t options, user_addr_t addr, size_t sz)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "kqueue_workloop_ctl(%p, %p, %p, %p)\n", (void *)cmd,
-			(void *)options, (void *)addr, (void *)sz);
 #endif
 	unimplemented();
 }
@@ -4523,7 +4421,7 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		return sys_nosys();
 	case 0x16e:
 		return sys_bsdthread_register((void *)arg1, (void *)arg2, arg3,
-				(void *)arg4, (void *)arg5, arg6, sp[1]);
+				(void *)arg4, arg5, arg6);
 	case 0x16f:
 		return sys_workq_open();
 	case 0x170:
@@ -4542,12 +4440,10 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 				arg1, (void *)arg2, (void *)arg3, (void *)arg4);
 	case 0x176:
 		return sys_kevent_qos(arg1, (void *)arg2, arg3, (void *)arg4,
-				arg5, (void *)arg6, (void *)sp[1],
-				(void *)sp[2]);
+				arg5, (void *)arg6, (void *)sp[1], sp[2]);
 	case 0x177:
 		return sys_kevent_id(arg1, (void *)arg2, arg3, (void *)arg4,
-				arg5, (void *)arg6, (void *)sp[1],
-				(void *)sp[2]);
+				arg5, (void *)arg6, (void *)sp[1], sp[2]);
 	case 0x178:
 		return sys_nosys();
 	case 0x179:

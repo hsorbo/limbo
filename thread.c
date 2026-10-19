@@ -1,0 +1,164 @@
+/*
+ * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#include <asm/prctl.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include "osfmk/ipc.h"
+#include "syscall.h"
+#include "thread.h"
+
+int arch_prctl(int, unsigned long);
+
+static __thread struct thread *current;
+
+static void *thread_main(void *arg);
+static void thread_destroy(struct thread *thread);
+
+struct thread *
+thread_current(void)
+{
+	if (current == NULL) {
+		current = thread_new(NULL, NULL);
+	}
+	return current;
+}
+
+struct thread *
+thread_new(thread_continuation_t continuation, void *context)
+{
+	struct thread *thread = calloc(1, sizeof(*thread));
+	thread->port = ipc_kobject_copy_send(
+			ipc_kobject_alloc(IPC_KOBJECT_THREAD, thread));
+	thread->continuation = continuation;
+	thread->context = context;
+	return thread;
+}
+
+int
+thread_start(struct thread *thread, const struct thread_state *state)
+{
+	thread->spawned = true;
+	thread->continuation_pending = state == NULL;
+	if (state != NULL) {
+		thread->state = *state;
+	}
+
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+
+	pthread_t handle;
+	int error = pthread_create(&handle, &attr, thread_main, thread);
+	pthread_attr_destroy(&attr);
+	return error;
+}
+
+static void *
+thread_main(void *arg)
+{
+	struct thread *thread = arg;
+	current = thread;
+
+	if (syscall_dispatch_enable()) {
+		abort();
+	}
+
+	if (sigsetjmp(thread->kernel, 1) != 0) {
+		thread->continuation_pending = true;
+	}
+
+	if (thread->continuation_pending) {
+		thread->continuation_pending = false;
+		if (thread->terminating
+				|| !thread->continuation(
+						thread, &thread->state)) {
+			thread_destroy(thread);
+			return NULL;
+		}
+	}
+	thread_enter(&thread->state);
+}
+
+static void
+thread_destroy(struct thread *thread)
+{
+	if (thread->stack_size != 0) {
+		munmap(thread->stack, thread->stack_size);
+	}
+	ipc_kobject_destroy(thread->port);
+	ipc_port_deallocate(thread->port);
+	current = NULL;
+	free(thread);
+}
+
+void
+thread_enter(const struct thread_state *state)
+{
+	if (state->gs_base != 0) {
+		arch_prctl(ARCH_SET_GS, state->gs_base);
+	}
+
+	asm volatile("movq 8(%%rax), %%rsp\n"
+		     "movq 16(%%rax), %%rdi\n"
+		     "movq 24(%%rax), %%rsi\n"
+		     "movq 32(%%rax), %%rdx\n"
+		     "movq 40(%%rax), %%rcx\n"
+		     "movq 48(%%rax), %%r8\n"
+		     "movq 56(%%rax), %%r9\n"
+		     "jmpq *(%%rax)\n" ::"a"(state));
+	__builtin_unreachable();
+}
+
+void
+thread_block(void)
+{
+	siglongjmp(current->kernel, 1);
+}
+
+void
+thread_exit(void *stack, size_t stack_size)
+{
+	if (!current->spawned) {
+		syscall(SYS_exit, 0);
+	}
+
+	current->terminating = true;
+	current->stack = stack;
+	current->stack_size = stack_size;
+	siglongjmp(current->kernel, 1);
+}

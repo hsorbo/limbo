@@ -29,6 +29,7 @@
 
 #include <mach/mach_types.h>
 #include <mach/message.h>
+#include <stdbool.h>
 
 typedef uint64_t mach_msg_option64_t;
 
@@ -66,6 +67,8 @@ mach_port_name_t ipc_kobject_alloc(ipc_kobject_type_t type, void *kobject);
 mach_port_name_t ipc_kobject_copy_send(mach_port_name_t name);
 void *ipc_kobject_lookup(mach_port_name_t name, ipc_kobject_type_t type);
 void ipc_kobject_destroy(mach_port_name_t name);
+
+bool ipc_port_peek(mach_port_name_t name);
 
 mach_msg_return_t ipc_mach_msg(mach_msg_header_t *msg,
 		mach_msg_option64_t options, mach_msg_size_t send_size,

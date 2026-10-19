@@ -343,9 +343,8 @@ int sys_kevent(int fd, void *changelist, int nchanges, void *eventlist,
 		int nevents, void *timeout);
 int sys_lchown(user_addr_t path, void *owner, void *group);
 int sys_bsdthread_register(user_addr_t threadstart, user_addr_t wqthread,
-		uint32_t flags, user_addr_t stack_addr_hint,
-		user_addr_t targetconc_ptr, uint32_t dispatchqueue_offset,
-		uint32_t tsd_offset);
+		uint32_t pthread_size, user_addr_t data, uint32_t data_size,
+		uint32_t dispatch_queue_offset);
 int sys_workq_open(void);
 int sys_workq_kernreturn(int options, user_addr_t item, int affinity, int prio);
 int sys_kevent64(int fd, void *changelist, int nchanges, void *eventlist,
@@ -354,10 +353,10 @@ uint64_t sys_thread_selfid(void);
 int sys_ledger(int cmd, void *arg1, void *arg2, void *arg3);
 int sys_kevent_qos(int fd, void *changelist, int nchanges, void *eventlist,
 		int nevents, void *data_out, size_t *data_available,
-		void *flags);
+		unsigned int flags);
 int sys_kevent_id(uint64_t id, void *changelist, int nchanges, void *eventlist,
 		int nevents, void *data_out, size_t *data_available,
-		void *flags);
+		unsigned int flags);
 int sys___mac_execve(char *fname, char **argp, char **envp, void *mac_p);
 int sys___mac_syscall(char *policy, int call, user_addr_t arg);
 int sys___mac_get_file(char *path_p, void *mac_p);

@@ -1,9 +1,11 @@
 bsd_lib = static_library('bsd',
   sources: [
     'handler.c',
+    'kevent.c',
     'csr.c',
     'mac.c',
     'map_with_linking.c',
+    'pthread.c',
     'sysctl.c',
     'fs/stat.c',
     'fs/attrlist.c',

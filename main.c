@@ -30,7 +30,6 @@
 #define _GNU_SOURCE
 #endif
 
-#include <asm/prctl.h>
 #include <mach/mach.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +37,7 @@
 #include <sys/mman.h>
 #include <sys/personality.h>
 #include <sys/random.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 #include "commpage.h"
@@ -45,11 +45,10 @@
 #include "shared_cache.h"
 #include "syscall.h"
 #include "sysroot.h"
+#include "thread.h"
 
 /* Temporary TLS for dyld */
 static char dyld_ls[0x1000];
-
-int arch_prctl(int, unsigned long);
 
 static int run(int argc, char *argv[], char *envp[]);
 static uintptr_t build_stack(uint8_t *exe_base, const char *path, int argc,
@@ -139,10 +138,12 @@ run(int argc, char *argv[], char *envp[])
 
 	/* Set up the temporary zero-ed TLS storage for dyld */
 	memset(dyld_ls, 0, sizeof(dyld_ls));
-	arch_prctl(ARCH_SET_GS, (unsigned long)dyld_ls);
-
-	asm volatile("mov %0, %%rsp; jmp *%1" ::"r"(stack_base), "r"(entry));
-	__builtin_unreachable();
+	struct thread_state state = {
+			.rip = entry,
+			.rsp = stack_base,
+			.gs_base = (uint64_t)dyld_ls,
+	};
+	thread_enter(&state);
 error:
 	exit(1);
 }
