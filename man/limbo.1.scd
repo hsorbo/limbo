@@ -6,7 +6,7 @@ limbo - XNU in Linux userspace
 
 # SYNOPSIS
 
-_limbo_ [path]
+_limbo_ _path_ _argv0_ [_args_...]
 
 This program is not meant to be executed directly. Instead, register binfmt handlers
 for Mach-O programs.
@@ -21,6 +21,20 @@ targeting macOS or iOS on Linux without modification.
 
 *path*
 	Executes the specified file in Limbo.
+
+*argv0*
+	The name the program was invoked as, preserved by the binfmt.d(5) _P_
+	flag.
+
+*args*
+	Arguments passed on to the program.
+
+# ENVIRONMENT
+
+*LIMBO_SYSROOT*
+	Directory holding the macOS or iOS userspace. Absolute paths used by the
+	program resolve inside it when they exist there, and on the host
+	otherwise.
 
 # SEE ALSO
 
