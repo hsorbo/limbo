@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -25,32 +26,29 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#pragma once
-
 #include <mach/mach.h>
+#include <stdio.h>
 
-#define HOST_REPLY_PORT           ((mach_port_t)0xcafebabe)
-#define TASK_REPLY_PORT           ((mach_port_t)0xbabebabe)
-#define THREAD_REPLY_PORT         ((mach_port_t)0xcafe0001)
-#define MACH_REPLY_PORT           ((mach_port_t)0xdeadbeef)
-#define SYSTEM_CLOCK_PORT         ((mach_port_t)0xbabe0002)
-#define BOOTSTRAP_PORT            ((mach_port_t)0x000babe0)
-#define HOST_SPECIAL_PORT_1       ((mach_port_t)0x000babe1)
-#define THREAD_SPECIAL_REPLY_PORT ((mach_port_t)0x000babe2)
+#include "task_restartable.h"
 
-/* Not defined in the headers, for some reason */
+kern_return_t
+task_restartable_ranges_register(task_t target_task,
+		task_restartable_range_array_t ranges,
+		mach_msg_type_number_t rangesCnt)
+{
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "task_restartable_ranges_register(%p, %p, %p)\n",
+			(void *)target_task, (void *)ranges, (void *)rangesCnt);
+#endif
+	return KERN_SUCCESS;
+}
 
-typedef struct {
-	mach_vm_address_t location;
-	unsigned short length;
-	unsigned short recovery_offs;
-	unsigned int flags;
-} task_restartable_range_t;
-
-typedef task_restartable_range_t *task_restartable_range_array_t;
-
-boolean_t mach_host_server(
-		mach_msg_header_t *InHeadP, mach_msg_header_t *OutHeadP);
-boolean_t task_server(mach_msg_header_t *InHeadP, mach_msg_header_t *OutHeadP);
-boolean_t bootstrap_server(
-		mach_msg_header_t *InHeadP, mach_msg_header_t *OutHeadP);
+kern_return_t
+task_restartable_ranges_synchronize(task_t target_task)
+{
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "task_restartable_ranges_synchronize(%p)\n",
+			(void *)target_task);
+#endif
+	return KERN_SUCCESS;
+}

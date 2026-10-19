@@ -90,6 +90,11 @@ typedef uint64_t                vm_object_size_t;
 typedef mach_port_t             upl_t;
 typedef mach_port_t             vm_named_entry_t;
 
+typedef mach_vm_offset_t                *mach_vm_offset_list_t;
+
+typedef uint32_t mach_vm_range_flavor_t;
+typedef uint8_t                *mach_vm_range_recipes_raw_t;
+
 
 #define UPL_NULL                ((upl_t) 0)
 #define VM_NAMED_ENTRY_NULL     ((vm_named_entry_t) 0)

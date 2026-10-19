@@ -60,6 +60,7 @@
 
 #include "commpage.h"
 #include "handler.h"
+#include "osfmk/semaphore.h"
 #include "shared_cache.h"
 #include "sysroot.h"
 #include "xnu-errno.h"

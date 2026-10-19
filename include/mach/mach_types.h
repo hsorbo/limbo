@@ -104,6 +104,7 @@
 #include <mach/vm_behavior.h>
 #include <mach/vm_prot.h>
 #include <mach/vm_statistics.h>
+#include <mach_debug/ipc_info.h>
 #include <mach/vm_sync.h>
 #include <mach/vm_types.h>
 #include <mach/vm_region.h>
@@ -146,6 +147,8 @@ typedef mach_port_t             arcade_register_t;
 typedef mach_port_t             ipc_eventlink_t;
 typedef mach_port_t             eventlink_port_pair_t[2];
 typedef mach_port_t             suid_cred_t;
+typedef mach_port_t             task_id_token_t;
+typedef mach_port_t             kcdata_object_t;
 
 
 /*
@@ -163,8 +166,10 @@ typedef mach_port_t             bootstrap_t;
 typedef mach_port_t             mem_entry_name_port_t;
 typedef mach_port_t             exception_handler_t;
 typedef exception_handler_t     *exception_handler_array_t;
+typedef ipc_info_port_t         exception_handler_info_t;
 typedef mach_port_t             vm_task_entry_t;
 typedef mach_port_t             io_master_t;
+typedef mach_port_t             io_main_t;
 typedef mach_port_t             UNDServerRef;
 typedef mach_port_t             mach_eventlink_t;
 

@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -27,38 +28,56 @@
 
 #include <mach/mach.h>
 #include <stdio.h>
-#include <stdlib.h>
+#include <string.h>
+#include <sys/sysinfo.h>
+#include <unistd.h>
 
-#include "port.h"
+#include "ipc.h"
 
 kern_return_t
-host_info(host_t host, host_flavor_t flavor, host_info_t info,
-		mach_msg_type_number_t *count)
+host_info(host_t host, host_flavor_t flavor, host_info_t host_info_out,
+		mach_msg_type_number_t *host_info_outCnt)
 {
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "host_info(%p, %p, %p, %p)\n", (void *)host,
-			(void *)flavor, (void *)info, (void *)count);
+			(void *)flavor, (void *)host_info_out,
+			(void *)host_info_outCnt);
 #endif
 	switch (flavor) {
 	case HOST_BASIC_INFO: {
-		host_basic_info_t basic_info = (host_basic_info_t)info;
+		host_basic_info_t basic_info = (host_basic_info_t)host_info_out;
 		memset(basic_info, 0, sizeof(*basic_info));
+		int cpus = sysconf(_SC_NPROCESSORS_ONLN);
+		uint64_t memory_size = (uint64_t)sysconf(_SC_PHYS_PAGES)
+				* getpagesize();
+		basic_info->max_cpus = cpus;
+		basic_info->avail_cpus = cpus;
+		basic_info->memory_size = (memory_size > UINT32_MAX)
+				? UINT32_MAX
+				: memory_size;
 		basic_info->cpu_type = CPU_TYPE_X86_64;
 		basic_info->cpu_subtype = CPU_SUBTYPE_X86_64_ALL;
-		*count = 1;
+		basic_info->cpu_threadtype = CPU_THREADTYPE_NONE;
+		basic_info->physical_cpu = cpus;
+		basic_info->physical_cpu_max = cpus;
+		basic_info->logical_cpu = cpus;
+		basic_info->logical_cpu_max = cpus;
+		basic_info->max_mem = memory_size;
+		*host_info_outCnt = HOST_BASIC_INFO_COUNT;
 	} break;
 	case HOST_PRIORITY_INFO: {
-		host_priority_info_t priority_info = (host_priority_info_t)info;
+		host_priority_info_t priority_info
+				= (host_priority_info_t)host_info_out;
 		memset(priority_info, 0, sizeof(*priority_info));
 		/* TODO: This struct should be non-zero */
-		*count = 1;
+		*host_info_outCnt = HOST_PRIORITY_INFO_COUNT;
 	} break;
 	case HOST_PREFERRED_USER_ARCH: {
 		host_preferred_user_arch_t preferred_arch
-				= (host_preferred_user_arch_t)info;
+				= (host_preferred_user_arch_t)host_info_out;
 		preferred_arch->cpu_type = CPU_TYPE_X86_64;
-		preferred_arch->cpu_subtype = CPU_SUBTYPE_X86_ALL;
-		*count = 1;
+		preferred_arch->cpu_subtype = CPU_SUBTYPE_X86_64_ALL;
+		*host_info_outCnt = HOST_PREFERRED_USER_ARCH_COUNT;
 	} break;
 	default:
 		unimplemented();
@@ -119,13 +138,33 @@ host_processor_info(host_t host, processor_flavor_t flavor,
 }
 
 kern_return_t
-host_get_io_master(host_t host, io_master_t *io_master)
+host_get_io_main(host_t host, io_main_t *io_main)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "host_get_io_master(%p, %p)\n", (void *)host,
-			(void *)io_master);
+	fprintf(stderr, "host_get_io_main(%p, %p)\n", (void *)host,
+			(void *)io_main);
 #endif
-	unimplemented();
+	return KERN_FAILURE;
+}
+
+kern_return_t
+host_get_clock_service(
+		host_t host, clock_id_t clock_id, clock_serv_t *clock_serv)
+{
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "host_get_clock_service(%p, %p, %p)\n", (void *)host,
+			(void *)clock_id, (void *)clock_serv);
+#endif
+	switch (clock_id) {
+	case SYSTEM_CLOCK:
+		*clock_serv = ipc_kobject_name(IPC_KOBJECT_CLOCK);
+		return KERN_SUCCESS;
+	case CALENDAR_CLOCK:
+		*clock_serv = ipc_kobject_name(IPC_KOBJECT_CALENDAR_CLOCK);
+		return KERN_SUCCESS;
+	default:
+		return KERN_INVALID_ARGUMENT;
+	}
 }
 
 kern_return_t
@@ -197,7 +236,23 @@ host_statistics(host_t host_priv, host_flavor_t flavor,
 			(void *)flavor, (void *)host_info_out,
 			(void *)host_info_outCnt);
 #endif
-	unimplemented();
+	if (flavor != HOST_VM_INFO) {
+		unimplemented();
+	}
+
+	struct sysinfo info;
+	sysinfo(&info);
+	natural_t page_size = getpagesize();
+	natural_t total = (uint64_t)info.totalram * info.mem_unit / page_size;
+	natural_t free = (uint64_t)info.freeram * info.mem_unit / page_size;
+
+	vm_statistics_t statistics = (vm_statistics_t)host_info_out;
+	memset(statistics, 0, sizeof(*statistics));
+	statistics->free_count = free;
+	statistics->active_count = (total - free) / 2;
+	statistics->inactive_count = (total - free) - statistics->active_count;
+	*host_info_outCnt = HOST_VM_INFO_COUNT;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -236,7 +291,7 @@ host_statistics64(host_t host_priv, host_flavor_t flavor,
 }
 
 kern_return_t
-mach_zone_info(host_priv_t host, mach_zone_name_array_t *names,
+mach_zone_info(mach_port_t host, mach_zone_name_array_t *names,
 		mach_msg_type_number_t *namesCnt, mach_zone_info_array_t *info,
 		mach_msg_type_number_t *infoCnt)
 {
@@ -308,16 +363,14 @@ host_set_atm_diagnostic_flag(host_t host, uint32_t diagnostic_flag)
 }
 
 kern_return_t
-mach_memory_info(host_priv_t host, mach_zone_name_array_t *names,
+mach_memory_info(mach_port_t host, mach_zone_name_array_t *names,
 		mach_msg_type_number_t *namesCnt, mach_zone_info_array_t *info,
 		mach_msg_type_number_t *infoCnt,
 		mach_memory_info_array_t *memory_info,
 		mach_msg_type_number_t *memory_infoCnt)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr,
-			"host_register_well_known_mach_voucher_attr_manager(%p,"
-			" %p, %p, %p, %p, %p, %p)\n",
+	fprintf(stderr, "mach_memory_info(%p, %p, %p, %p, %p, %p, %p)\n",
 			(void *)host, (void *)names, (void *)namesCnt,
 			(void *)info, (void *)infoCnt, (void *)memory_info,
 			(void *)memory_infoCnt);
@@ -347,33 +400,19 @@ mach_zone_info_for_zone(
 }
 
 kern_return_t
-host_get_clock_service(host_t host, clock_id_t clock_id, clock_serv_t *clock)
+mach_memory_info_redacted(mach_port_t host, mach_zone_name_array_t *names,
+		mach_msg_type_number_t *namesCnt, mach_zone_info_array_t *info,
+		mach_msg_type_number_t *infoCnt,
+		mach_memory_info_array_t *memory_info,
+		mach_msg_type_number_t *memory_infoCnt)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "host_get_clock_service(%p, %p, %p)\n", (void *)host,
-			(void *)clock_id, (void *)clock);
+	fprintf(stderr,
+			"mach_memory_info_redacted(%p, %p, %p, %p, %p, %p, "
+			"%p)\n",
+			(void *)host, (void *)names, (void *)namesCnt,
+			(void *)info, (void *)infoCnt, (void *)memory_info,
+			(void *)memory_infoCnt);
 #endif
-	if (clock_id == SYSTEM_CLOCK) {
-		*clock = SYSTEM_CLOCK_PORT;
-		return KERN_SUCCESS;
-	}
-
-	unimplemented();
-}
-
-kern_return_t
-host_get_special_port(
-		host_priv_t host_priv, int node, int which, mach_port_t *port)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "host_get_special_port(%p, %p, %p, %p)\n",
-			(void *)host_priv, (void *)node, (void *)which,
-			(void *)port);
-#endif
-	if (node == -1 && which == 1) {
-		*port = HOST_SPECIAL_PORT_1;
-		return KERN_SUCCESS;
-	}
-
 	unimplemented();
 }

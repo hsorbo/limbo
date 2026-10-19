@@ -55,10 +55,12 @@
 #include <ucontext.h>
 #include <unistd.h>
 
-#include "bootstrap/bootstrap.h" /*__ReplyUnion__bootstrap_subsystem */
 #include "commpage.h"
 #include "handler.h"
-#include "port.h"
+#include "ipc.h"
+#include "mach_vm.h"
+#include "mk_timer.h"
+#include "semaphore.h"
 
 int
 sys_kern_invalid(void)
@@ -75,7 +77,9 @@ sys_mach_reply_port(void)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "mach_reply_port()\n");
 #endif
-	return MACH_REPLY_PORT;
+	mach_port_name_t name;
+	ipc_port_allocate(MACH_PORT_RIGHT_RECEIVE, &name);
+	return name;
 }
 
 mach_port_name_t
@@ -84,7 +88,9 @@ sys_thread_get_special_reply_port(void)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "thread_get_special_reply_port()\n");
 #endif
-	return THREAD_SPECIAL_REPLY_PORT;
+	mach_port_name_t name;
+	ipc_port_allocate(MACH_PORT_RIGHT_RECEIVE, &name);
+	return name;
 }
 
 mach_port_name_t
@@ -93,7 +99,7 @@ sys_thread_self_trap(void)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "thread_self_trap()\n");
 #endif
-	return THREAD_REPLY_PORT;
+	return ipc_kobject_copy_send(ipc_kobject_name(IPC_KOBJECT_THREAD));
 }
 
 mach_port_name_t
@@ -102,7 +108,7 @@ sys_host_self_trap(void)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "host_self_trap()\n");
 #endif
-	return HOST_REPLY_PORT;
+	return ipc_host_self();
 }
 
 mach_msg_return_t
@@ -117,57 +123,8 @@ sys_mach_msg_trap(mach_msg_header_t *msg, mach_msg_option_t option,
 			(void *)rcv_size, (void *)rcv_name, (void *)timeout,
 			(void *)notify);
 #endif
-	mach_msg_header_t *output;
-
-	/* TODO: Read the disposition of the request and check if it is
-	 * send/receive right now we just copy over all the messages. */
-
-	/* TODO: There is a bug somewhere where the MIG generator sets a
-	 * disposition of copy on messages, so you need to change the
-	 * disposition in the MIG generated code from 19 to 17 (copy to move) */
-
-#ifdef ENABLE_STRACE
-	fprintf(stderr, ">> Mach message: port: %#x, message ID: %d\n",
-			msg->msgh_remote_port, msg->msgh_id);
-#endif
-
-	switch (msg->msgh_remote_port) {
-	case HOST_REPLY_PORT:
-		output = malloc(sizeof(
-				union __ReplyUnion__mach_host_subsystem));
-		mach_host_server(msg, output);
-		/* TODO: Not clear on why this is required, but type checking
-		 * fails if the remote port is not NULL */
-		output->msgh_remote_port = MACH_PORT_NULL;
-		memcpy(msg, output, output->msgh_size);
-		free(output);
-		break;
-	case TASK_REPLY_PORT:
-		output = malloc(sizeof(union __ReplyUnion__task_subsystem));
-		task_server(msg, output);
-		/* TODO: Not clear on why this is required, but type checking
-		 * fails if the remote port is not NULL */
-		output->msgh_remote_port = MACH_PORT_NULL;
-		memcpy(msg, output, output->msgh_size);
-		free(output);
-		break;
-	case BOOTSTRAP_PORT:
-		output = malloc(sizeof(
-				union __ReplyUnion__bootstrap_subsystem));
-		bootstrap_server(msg, output);
-		memcpy(msg, output, output->msgh_size);
-		free(output);
-		break;
-	default:
-#ifdef ENABLE_STRACE
-		fprintf(stderr, ">> Unhandled remote port: %#x\n",
-				msg->msgh_remote_port);
-#endif
-		// abort();
-		return KERN_FAILURE;
-	}
-
-	return KERN_SUCCESS;
+	return ipc_mach_msg(
+			msg, option, send_size, rcv_size, rcv_name, timeout);
 }
 
 mach_msg_return_t
@@ -188,13 +145,76 @@ sys_mach_msg_overwrite_trap(mach_msg_header_t *msg, mach_msg_option_t option,
 	unimplemented();
 }
 
+mach_msg_return_t
+sys_mach_msg2_trap(void *data, mach_msg_option64_t options,
+		uint64_t msgh_bits_and_send_size,
+		uint64_t msgh_remote_and_local_port,
+		uint64_t msgh_voucher_and_id, uint64_t desc_count_and_rcv_name,
+		uint64_t rcv_size_and_priority, uint64_t timeout)
+{
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "mach_msg2_trap(%p, %p, %p, %p, %p, %p, %p, %p)\n",
+			data, (void *)options, (void *)msgh_bits_and_send_size,
+			(void *)msgh_remote_and_local_port,
+			(void *)msgh_voucher_and_id,
+			(void *)desc_count_and_rcv_name,
+			(void *)rcv_size_and_priority, (void *)timeout);
+#endif
+	mach_msg_header_t *msg = data;
+	mach_msg_header_t *rcv_msg = data;
+	mach_msg_size_t send_size = msgh_bits_and_send_size >> 32;
+	mach_msg_size_t rcv_size = (mach_msg_size_t)rcv_size_and_priority;
+	if (options & MACH64_MSG_VECTOR) {
+		mach_msg_vector_t *vector = data;
+		mach_msg_size_t count = send_size;
+		msg = (mach_msg_header_t *)vector[0].msgv_data;
+		rcv_msg = (vector[0].msgv_rcv_addr != 0)
+				? (mach_msg_header_t *)vector[0].msgv_rcv_addr
+				: msg;
+		send_size = vector[0].msgv_send_size;
+		rcv_size = vector[0].msgv_rcv_size;
+		if ((options & MACH64_RCV_MSG) && count > 1) {
+			mach_msg_aux_header_t *aux = (mach_msg_aux_header_t
+							*)((vector[1].msgv_rcv_addr
+									   != 0)
+							? vector[1].msgv_rcv_addr
+							: vector[1].msgv_data);
+			aux->msgdh_size = 0;
+		}
+	}
+
+	if (options & MACH64_SEND_MSG) {
+		msg->msgh_bits = (mach_msg_bits_t)msgh_bits_and_send_size;
+		msg->msgh_size = send_size;
+		msg->msgh_remote_port
+				= (mach_port_name_t)msgh_remote_and_local_port;
+		msg->msgh_local_port = msgh_remote_and_local_port >> 32;
+		msg->msgh_voucher_port = (mach_port_name_t)msgh_voucher_and_id;
+		msg->msgh_id = msgh_voucher_and_id >> 32;
+
+		mach_msg_return_t mr = ipc_mach_msg(msg,
+				options & ~MACH64_RCV_MSG, send_size, 0,
+				MACH_PORT_NULL, timeout);
+		if (mr != MACH_MSG_SUCCESS) {
+			return mr;
+		}
+	}
+
+	if (options & MACH64_RCV_MSG) {
+		return ipc_mach_msg(rcv_msg, options & ~MACH64_SEND_MSG, 0,
+				rcv_size, desc_count_and_rcv_name >> 32,
+				timeout);
+	}
+	return MACH_MSG_SUCCESS;
+}
+
 kern_return_t
 sys_semaphore_signal_trap(mach_port_name_t signal_name)
 {
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "semaphore_signal_trap(%p)\n", (void *)signal_name);
 #endif
-	unimplemented();
+	return semaphore_signal(signal_name);
 }
 
 kern_return_t
@@ -203,7 +223,7 @@ sys_semaphore_signal_all_trap(mach_port_name_t signal_name)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "semaphore_signal_all_trap(%p)\n", (void *)signal_name);
 #endif
-	unimplemented();
+	return semaphore_signal_all(signal_name);
 }
 
 kern_return_t
@@ -214,7 +234,10 @@ sys_semaphore_signal_thread_trap(
 	fprintf(stderr, "semaphore_signal_thread_trap(%p, %p)\n",
 			(void *)signal_name, (void *)thread_name);
 #endif
-	unimplemented();
+	if (thread_name != MACH_PORT_NULL) {
+		unimplemented();
+	}
+	return semaphore_signal(signal_name);
 }
 
 kern_return_t
@@ -223,7 +246,7 @@ sys_semaphore_wait_trap(mach_port_name_t wait_name)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "semaphore_wait_trap(%p)\n", (void *)wait_name);
 #endif
-	unimplemented();
+	return semaphore_wait(wait_name);
 }
 
 kern_return_t
@@ -234,7 +257,7 @@ sys_semaphore_wait_signal_trap(
 	fprintf(stderr, "semaphore_wait_signal_trap(%p, %p)\n",
 			(void *)wait_name, (void *)signal_name);
 #endif
-	unimplemented();
+	return semaphore_wait_signal(wait_name, signal_name);
 }
 
 kern_return_t
@@ -245,7 +268,7 @@ sys_semaphore_timedwait_trap(
 	fprintf(stderr, "semaphore_timedwait_trap(%p, %p, %p)\n",
 			(void *)wait_name, (void *)sec, (void *)nsec);
 #endif
-	unimplemented();
+	return semaphore_timedwait(wait_name, (mach_timespec_t){sec, nsec});
 }
 
 kern_return_t
@@ -258,7 +281,8 @@ sys_semaphore_timedwait_signal_trap(mach_port_name_t wait_name,
 			(void *)wait_name, (void *)signal_name, (void *)sec,
 			(void *)nsec);
 #endif
-	unimplemented();
+	return semaphore_timedwait_signal(
+			wait_name, signal_name, (mach_timespec_t){sec, nsec});
 }
 
 kern_return_t
@@ -283,17 +307,7 @@ sys__kernelrpc_mach_vm_allocate_trap(mach_port_name_t target,
 			(void *)target, (void *)addr, (void *)size,
 			(void *)flags);
 #endif
-	void *map = mmap(NULL, size, PROT_READ | PROT_WRITE,
-			MAP_PRIVATE | MAP_ANON, -1, 0);
-	if (map == MAP_FAILED) {
-#ifdef ENABLE_STRACE
-		perror("mmap");
-#endif
-		return KERN_INVALID_ADDRESS;
-	} else {
-		*(uint64_t *)addr = (uint64_t)map;
-		return KERN_SUCCESS;
-	}
+	return _kernelrpc_mach_vm_allocate(target, addr, size, flags);
 }
 
 kern_return_t
@@ -304,8 +318,7 @@ sys__kernelrpc_mach_vm_deallocate_trap(mach_port_name_t target,
 	fprintf(stderr, "_kernelrpc_mach_vm_deallocate_trap(%p, %p, %p)\n",
 			(void *)target, (void *)address, (void *)size);
 #endif
-	/* TODO: Handle deallocating mappings */
-	return KERN_SUCCESS;
+	return _kernelrpc_mach_vm_deallocate(target, address, size);
 }
 
 kern_return_t
@@ -318,19 +331,9 @@ sys__kernelrpc_mach_vm_protect_trap(mach_port_name_t target,
 			(void *)target, (void *)address, (void *)size,
 			(void *)set_maximum, (void *)new_protection);
 #endif
-	/* TODO: Convert protection and return code */
-	return mprotect((void *)address, size, new_protection);
+	return _kernelrpc_mach_vm_protect(
+			target, address, size, set_maximum, new_protection);
 }
-
-#define VM_FLAGS_FIXED              0x0000
-#define VM_FLAGS_ANYWHERE           0x0001
-#define VM_FLAGS_PURGABLE           0x0002
-#define VM_FLAGS_4GB_CHUNK          0x0004
-#define VM_FLAGS_RANDOM_ADDR        0x0008
-#define VM_FLAGS_NO_CACHE           0x0010
-#define VM_FLAGS_RESILIENT_CODESIGN 0x0020
-#define VM_FLAGS_RESILIENT_MEDIA    0x0040
-#define VM_FLAGS_OVERWRITE          0x4000
 
 kern_return_t
 sys__kernelrpc_mach_vm_map_trap(mach_port_name_t target,
@@ -342,43 +345,9 @@ sys__kernelrpc_mach_vm_map_trap(mach_port_name_t target,
 			(void *)target, (void *)address, (void *)size,
 			(void *)mask, (void *)flags, (void *)cur_protection);
 #endif
-	/* TODO: Convert flags and protection appropriately */
-	void *base = NULL;
-	/* HACK: Sleep with one eye open */
-	size *= 4;
-	/* Fixed mapping, anywhere is not set */
-	if ((flags & VM_FLAGS_ANYWHERE) == 0) {
-		base = mmap((void *)*address, size, cur_protection,
-				MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-		/* Anywhere mapping*/
-	} else {
-		if (*address != PAGE_SIZE) {
-			base = mmap((void *)*address, size, cur_protection,
-					MAP_PRIVATE | MAP_ANON | MAP_FIXED
-							| MAP_FIXED_NOREPLACE,
-					-1, 0);
-			while (base == MAP_FAILED) {
-				*address += 0x400000;
-				base = mmap((void *)*address, size,
-						cur_protection,
-						MAP_PRIVATE | MAP_ANON
-								| MAP_FIXED
-								| MAP_FIXED_NOREPLACE,
-						-1, 0);
-			}
-		} else {
-			base = mmap(NULL, size, cur_protection,
-					MAP_PRIVATE | MAP_ANON, -1, 0);
-		}
-
-		*address = (mach_vm_offset_t)base;
-	}
-
-	if (base == MAP_FAILED) {
-		perror("mmap");
-		return -EINVAL;
-	}
-	return KERN_SUCCESS;
+	return _kernelrpc_mach_vm_map(target, address, size, mask, flags,
+			MACH_PORT_NULL, 0, FALSE, cur_protection, VM_PROT_ALL,
+			VM_INHERIT_DEFAULT);
 }
 
 kern_return_t
@@ -403,7 +372,7 @@ sys__kernelrpc_mach_port_allocate_trap(mach_port_name_t target,
 	fprintf(stderr, "_kernelrpc_mach_port_allocate_trap(%p, %p, %p)\n",
 			(void *)target, (void *)right, (void *)name);
 #endif
-	unimplemented();
+	return ipc_port_allocate(right, name);
 }
 
 kern_return_t
@@ -414,8 +383,7 @@ sys__kernelrpc_mach_port_deallocate_trap(
 	fprintf(stderr, "_kernelrpc_mach_port_deallocate_trap(%p, %p)\n",
 			(void *)target, (void *)name);
 #endif
-	/* TODO: Handle deallocating ports */
-	return KERN_SUCCESS;
+	return ipc_port_deallocate(name);
 }
 
 kern_return_t
@@ -428,8 +396,7 @@ sys__kernelrpc_mach_port_mod_refs_trap(mach_port_name_t target,
 			(void *)target, (void *)name, (void *)right,
 			(void *)delta);
 #endif
-	/* TODO: Handle */
-	return KERN_FAILURE;
+	return ipc_port_mod_refs(name, right, delta);
 }
 
 kern_return_t
@@ -440,7 +407,7 @@ sys__kernelrpc_mach_port_move_member_trap(mach_port_name_t target,
 	fprintf(stderr, "_kernelrpc_mach_port_move_member_trap(%p, %p, %p)\n",
 			(void *)target, (void *)member, (void *)after);
 #endif
-	unimplemented();
+	return ipc_port_move_member(member, after);
 }
 
 kern_return_t
@@ -455,7 +422,7 @@ sys__kernelrpc_mach_port_insert_right_trap(mach_port_name_t target,
 			(void *)target, (void *)name, (void *)poly,
 			(void *)polyPoly);
 #endif
-	unimplemented();
+	return ipc_port_insert_right(name, poly, polyPoly);
 }
 
 kern_return_t
@@ -471,7 +438,8 @@ sys__kernelrpc_mach_port_get_attributes_trap(mach_port_name_t target,
 			(void *)target, (void *)name, (void *)flavor,
 			(void *)port_info_out, (void *)port_info_outCnt);
 #endif
-	unimplemented();
+	return mach_port_get_attributes(
+			target, name, flavor, port_info_out, port_info_outCnt);
 }
 
 kern_return_t
@@ -482,7 +450,7 @@ sys__kernelrpc_mach_port_insert_member_trap(mach_port_name_t target,
 	fprintf(stderr, "_kernelrpc_mach_port_insert_member_trap(%p, %p, %p)\n",
 			(void *)target, (void *)name, (void *)pset);
 #endif
-	unimplemented();
+	return ipc_port_move_member(name, pset);
 }
 
 kern_return_t
@@ -495,7 +463,7 @@ sys__kernelrpc_mach_port_extract_member_trap(mach_port_name_t target,
 			"%p)\n",
 			(void *)target, (void *)name, (void *)pset);
 #endif
-	unimplemented();
+	return ipc_port_move_member(name, MACH_PORT_NULL);
 }
 
 kern_return_t
@@ -508,9 +476,7 @@ sys__kernelrpc_mach_port_construct_trap(mach_port_name_t target,
 			(void *)target, (void *)options, (void *)context,
 			(void *)name);
 #endif
-	/* TODO: Handle */
-	/* return KERN_FAILURE; */
-	return KERN_SUCCESS;
+	return ipc_port_construct(options, context, name);
 }
 
 kern_return_t
@@ -523,7 +489,7 @@ sys__kernelrpc_mach_port_destruct_trap(mach_port_name_t target,
 			(void *)target, (void *)name, (void *)srdelta,
 			(void *)guard);
 #endif
-	unimplemented();
+	return ipc_port_destruct(name, srdelta, guard);
 }
 
 kern_return_t
@@ -535,7 +501,7 @@ sys__kernelrpc_mach_port_guard_trap(mach_port_name_t target,
 			(void *)target, (void *)name, (void *)guard,
 			(void *)strict);
 #endif
-	unimplemented();
+	return ipc_port_set_context(name, guard);
 }
 
 kern_return_t
@@ -546,7 +512,7 @@ sys__kernelrpc_mach_port_unguard_trap(
 	fprintf(stderr, "_kernelrpc_mach_port_unguard_trap(%p, %p, %p)\n",
 			(void *)target, (void *)name, (void *)guard);
 #endif
-	unimplemented();
+	return ipc_port_set_context(name, 0);
 }
 
 kern_return_t
@@ -644,7 +610,7 @@ sys_task_self_trap(void)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "task_self_trap()\n");
 #endif
-	return TASK_REPLY_PORT;
+	return ipc_task_self();
 }
 
 kern_return_t
@@ -686,7 +652,7 @@ sys__kernelrpc_mach_port_type_trap(ipc_space_t task, mach_port_name_t name,
 	fprintf(stderr, "_kernelrpc_mach_port_type_trap(%p, %p, %p)\n",
 			(void *)task, (void *)name, (void *)ptype);
 #endif
-	unimplemented();
+	return ipc_port_type(name, ptype);
 }
 
 kern_return_t
@@ -702,7 +668,8 @@ sys__kernelrpc_mach_port_request_notification_trap(ipc_space_t task,
 			(void *)task, (void *)name, (void *)msgid, (void *)sync,
 			(void *)notify, (void *)notifyPoly, (void *)previous);
 #endif
-	unimplemented();
+	*previous = MACH_PORT_NULL;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -780,7 +747,7 @@ sys_mk_timer_create_trap(uint32_t dummy)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "mk_timer_create_trap(%p)\n", (void *)dummy);
 #endif
-	unimplemented();
+	return mk_timer_create();
 }
 
 kern_return_t
@@ -789,7 +756,7 @@ sys_mk_timer_destroy_trap(mach_port_name_t name)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "mk_timer_destroy_trap(%p)\n", (void *)name);
 #endif
-	unimplemented();
+	return mk_timer_destroy(name);
 }
 
 kern_return_t
@@ -799,7 +766,7 @@ sys_mk_timer_arm_trap(mach_port_name_t name, uint64_t expire_time)
 	fprintf(stderr, "mk_timer_arm_trap(%p, %p)\n", (void *)name,
 			(void *)expire_time);
 #endif
-	unimplemented();
+	return mk_timer_arm(name, expire_time);
 }
 
 kern_return_t
@@ -809,7 +776,7 @@ sys_mk_timer_cancel_trap(mach_port_name_t name, void *result_time)
 	fprintf(stderr, "mk_timer_cancel_trap(%p, %p)\n", (void *)name,
 			(void *)result_time);
 #endif
-	unimplemented();
+	return mk_timer_cancel(name, result_time);
 }
 
 kern_return_t
@@ -821,7 +788,7 @@ sys_mk_timer_arm_leeway_trap(mach_port_name_t name, uint64_t mk_timer_flags,
 			(void *)name, (void *)mk_timer_flags,
 			(void *)expire_time, (void *)mk_leeway);
 #endif
-	unimplemented();
+	return mk_timer_arm(name, expire_time);
 }
 
 kern_return_t
@@ -965,7 +932,8 @@ sys_osfmk(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 	case 0x2e:
 		return sys_pid_for_task(arg1, (void *)arg2);
 	case 0x2f:
-		return sys_kern_invalid();
+		return sys_mach_msg2_trap((void *)arg1, arg2, arg3, arg4, arg5,
+				arg6, sp[1], sp[2]);
 	case 0x30:
 		return sys_macx_swapon(arg1, arg2, arg3, arg4);
 	case 0x31:

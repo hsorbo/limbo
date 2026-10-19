@@ -31,6 +31,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ipc.h"
+
 typedef size_t mach_msg_send_size_t;
 
 uint64_t sys_osfmk(unsigned long syscall, uint64_t arg1, uint64_t arg2,
@@ -52,6 +54,11 @@ mach_msg_return_t sys_mach_msg_overwrite_trap(mach_msg_header_t *msg,
 		mach_msg_size_t rcv_size, mach_port_name_t rcv_name,
 		mach_msg_timeout_t timeout, mach_msg_priority_t priority,
 		mach_msg_header_t *rcv_msg, mach_msg_size_t rcv_limit);
+mach_msg_return_t sys_mach_msg2_trap(void *data, mach_msg_option64_t options,
+		uint64_t msgh_bits_and_send_size,
+		uint64_t msgh_remote_and_local_port,
+		uint64_t msgh_voucher_and_id, uint64_t desc_count_and_rcv_name,
+		uint64_t rcv_size_and_priority, uint64_t timeout);
 kern_return_t sys_semaphore_signal_trap(mach_port_name_t signal_name);
 kern_return_t sys_semaphore_signal_all_trap(mach_port_name_t signal_name);
 kern_return_t sys_semaphore_signal_thread_trap(

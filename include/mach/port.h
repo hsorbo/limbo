@@ -324,6 +324,21 @@ typedef struct mach_port_qos {
 	natural_t               len;
 } mach_port_qos_t;
 
+/*
+ * Structure used to pass information about the service port
+ */
+#define MACH_SERVICE_PORT_INFO_STRING_NAME_MAX_BUF_LEN  255    /* Maximum length of the port string name buffer */
+
+typedef struct mach_service_port_info {
+	char                    mspi_string_name[MACH_SERVICE_PORT_INFO_STRING_NAME_MAX_BUF_LEN]; /* Service port's string name */
+	uint8_t                 mspi_domain_type;          /* Service port domain */
+} mach_service_port_info_data_t;
+
+#define MACH_SERVICE_PORT_INFO_COUNT ((char) \
+	(sizeof(mach_service_port_info_data_t)/sizeof(char)))
+
+typedef struct mach_service_port_info * mach_service_port_info_t;
+
 /* Mach Port Guarding definitions */
 
 /*
