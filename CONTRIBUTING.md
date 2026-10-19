@@ -50,6 +50,22 @@ build/limbo $LIMBO_SYSROOT/bin/echo echo Hello, world
 Programs spawned by that program are run by the *binfmt.d*(5) handler, so for
 those to use your build, point `/etc/binfmt.d/Mach-O.conf` at it.
 
+## Testing
+
+Run the test suite with `meson test -C build`. It consists of two suites:
+
+* `unit` tests Limbo's own logic, such as path translation, and runs anywhere.
+* `guest` compiles each program in `tests/guest` with the Xcode toolchain in
+  `$LIMBO_SYSROOT` and runs it with the `limbo` that was just built. A guest
+  test passes when its program exits with status 0. These tests register a
+  private *binfmt.d*(5) handler in a user namespace, so that the programs they
+  spawn also use the build under test. This requires unprivileged user
+  namespaces and Linux 6.7 or later; the tests are skipped when that, or a
+  sysroot with Xcode, is not available.
+
+To add a guest test, write a C or C++ program in `tests/guest` that uses
+`CHECK()` from `tests/check.h`, and list it in `tests/meson.build`.
+
 ## Debugging
 
 To debug Limbo, run your program under `gdbserver`:

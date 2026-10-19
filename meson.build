@@ -38,7 +38,7 @@ subdir('bsd')
 subdir('mdep')
 subdir('osfmk')
 
-executable('limbo',
+limbo = executable('limbo',
   sources: [
     'commpage.c',
     'linker.c',
@@ -92,3 +92,4 @@ if scdoc.found()
 endif
 
 subdir('etc')
+subdir('tests')

@@ -1,0 +1,38 @@
+sysroot_test = executable('sysroot_test',
+  sources: ['sysroot_test.c', '../sysroot.c'],
+  include_directories: include_dir,
+  c_args: ['-Wno-unused-parameter'],
+)
+test('sysroot', sysroot_test, suite: 'unit')
+
+signo_test = executable('signo_test',
+  sources: ['signo_test.c', '../bsd/signo.c'],
+  include_directories: include_dir,
+)
+test('signo', signo_test, suite: 'unit')
+
+python = import('python').find_installation('python3')
+runner = files('run-guest.py')
+
+guest_tests = [
+  'corefoundation.c',
+  'cxx.cpp',
+  'dispatch.c',
+  'filesystem.c',
+  'hello.c',
+  'kqueue.c',
+  'mach.c',
+  'paths.c',
+  'spawn.c',
+  'sysinfo.c',
+  'threads.c',
+  'xpc.c',
+]
+
+foreach source : guest_tests
+  test(source.split('.')[0], python,
+    args: [runner, limbo, files('guest' / source), meson.current_build_dir()],
+    suite: 'guest',
+    timeout: 300,
+  )
+endforeach
