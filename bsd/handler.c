@@ -55,11 +55,13 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <ucontext.h>
 #include <unistd.h>
 
 #include "commpage.h"
+#include "fs/at.h"
 #include "handler.h"
 #include "kevent.h"
 #include "osfmk/semaphore.h"
@@ -133,7 +135,7 @@ sys_write(int fd, user_addr_t cbuf, user_size_t nbyte)
 #define _O_SHLOCK    0x00000010
 #define _O_EXLOCK    0x00000020
 #define _O_ASYNC     0x00000040
-#define _O_FSYNC     010000
+#define _O_FSYNC     0x00000080
 #define _O_NOFOLLOW  0x00000100
 #define _O_CREAT     0x00000200
 #define _O_TRUNC     0x00000400
@@ -143,6 +145,11 @@ sys_write(int fd, user_addr_t cbuf, user_size_t nbyte)
 #define _O_CLOEXEC   0x01000000
 
 static int open_follow(int flags);
+static int open_flags(int flags);
+static int fpathconf_value(int fd, int name);
+static struct timeval *convert_timevals(
+		const void *tptr, struct timeval *times);
+static unsigned int rename_flags(uint32_t flags);
 
 int
 sys_open(user_addr_t path, int flags, int mode)
@@ -152,6 +159,22 @@ sys_open(user_addr_t path, int flags, int mode)
 			(void *)mode);
 #endif
 	char buffer[PATH_MAX];
+	return errno_map(open(
+			sysroot_host_path(path, open_follow(flags), buffer),
+			open_flags(flags), mode));
+}
+
+static int
+open_follow(int flags)
+{
+	return (flags & (_O_NOFOLLOW | _O_SYMLINK | _O_EXCL))
+			? AT_SYMLINK_NOFOLLOW
+			: 0;
+}
+
+static int
+open_flags(int flags)
+{
 	int cflags = 0;
 	if (flags & _O_RDONLY)
 		cflags |= O_RDONLY;
@@ -187,17 +210,7 @@ sys_open(user_addr_t path, int flags, int mode)
 		cflags |= O_SYMLINK; */
 	if (flags & _O_CLOEXEC)
 		cflags |= O_CLOEXEC;
-	return errno_map(open(
-			sysroot_host_path(path, open_follow(flags), buffer),
-			(int)cflags, mode));
-}
-
-static int
-open_follow(int flags)
-{
-	return (flags & (_O_NOFOLLOW | _O_SYMLINK | _O_EXCL))
-			? AT_SYMLINK_NOFOLLOW
-			: 0;
+	return cflags;
 }
 
 int
@@ -283,7 +296,8 @@ sys_chmod(user_addr_t path, int mode)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "chmod(%p, %p)\n", (void *)path, (void *)mode);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	return errno_map(chmod(sysroot_host_path(path, 0, buffer), mode));
 }
 
 int
@@ -293,7 +307,8 @@ sys_chown(user_addr_t path, int uid, int gid)
 	fprintf(stderr, "chown(%p, %p, %p)\n", (void *)path, (void *)uid,
 			(void *)gid);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	return errno_map(chown(sysroot_host_path(path, 0, buffer), uid, gid));
 }
 
 int
@@ -996,7 +1011,7 @@ sys_readv(int fd, void *iovp, uint32_t iovcnt)
 	fprintf(stderr, "readv(%p, %p, %p)\n", (void *)fd, (void *)iovp,
 			(void *)iovcnt);
 #endif
-	unimplemented();
+	return errno_map(readv(fd, iovp, iovcnt));
 }
 
 user_ssize_t
@@ -1006,7 +1021,7 @@ sys_writev(int fd, void *iovp, uint32_t iovcnt)
 	fprintf(stderr, "writev(%p, %p, %p)\n", (void *)fd, (void *)iovp,
 			(void *)iovcnt);
 #endif
-	unimplemented();
+	return errno_map(writev(fd, iovp, iovcnt));
 }
 
 int
@@ -1025,7 +1040,7 @@ sys_fchown(int fd, int uid, int gid)
 	fprintf(stderr, "fchown(%p, %p, %p)\n", (void *)fd, (void *)uid,
 			(void *)gid);
 #endif
-	unimplemented();
+	return errno_map(fchown(fd, uid, gid));
 }
 
 int
@@ -1034,7 +1049,7 @@ sys_fchmod(int fd, int mode)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "fchmod(%p, %p)\n", (void *)fd, (void *)mode);
 #endif
-	unimplemented();
+	return errno_map(fchmod(fd, mode));
 }
 
 int
@@ -1082,7 +1097,10 @@ sys_mkfifo(user_addr_t path, int mode)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "mkfifo(%p, %p)\n", (void *)path, (void *)mode);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	return errno_map(mkfifo(
+			sysroot_host_path(path, AT_SYMLINK_NOFOLLOW, buffer),
+			mode));
 }
 
 int
@@ -1145,7 +1163,25 @@ sys_utimes(char *path, void *tptr)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "utimes(%p, %p)\n", (void *)path, (void *)tptr);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	struct timeval times[2];
+	return errno_map(utimes(sysroot_host_path(path, 0, buffer),
+			convert_timevals(tptr, times)));
+}
+
+static struct timeval *
+convert_timevals(const void *tptr, struct timeval *times)
+{
+	if (tptr == NULL) {
+		return NULL;
+	}
+
+	const struct __darwin_user64_timeval *darwin_times = tptr;
+	for (int i = 0; i < 2; i++) {
+		times[i].tv_sec = darwin_times[i].tv_sec;
+		times[i].tv_usec = darwin_times[i].tv_usec;
+	}
+	return times;
 }
 
 int
@@ -1154,7 +1190,8 @@ sys_futimes(int fd, void *tptr)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "futimes(%p, %p)\n", (void *)fd, (void *)tptr);
 #endif
-	unimplemented();
+	struct timeval times[2];
+	return errno_map(futimes(fd, convert_timevals(tptr, times)));
 }
 
 int
@@ -1404,18 +1441,61 @@ int
 sys_pathconf(char *path, int name)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "pathconf(%p, %p)\n", (void *)path, (void *)name);
+	fprintf(stderr, "pathconf(\"%s\", %d)\n", path, name);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	int fd = open(sysroot_host_path(path, 0, buffer), O_PATH);
+	if (fd == -1) {
+		return err_map(errno);
+	}
+	int result = fpathconf_value(fd, name);
+	close(fd);
+	return result;
+}
+
+#define XNU_PC_CASE_SENSITIVE  11
+#define XNU_PC_CASE_PRESERVING 12
+#define XNU_PC_FILESIZEBITS    18
+#define XNU_PC_SYMLINK_MAX     24
+#define XNU_PC_XATTR_SIZE_BITS 26
+
+static int
+fpathconf_value(int fd, int name)
+{
+	switch (name) {
+	case XNU_PC_CASE_SENSITIVE:
+	case XNU_PC_CASE_PRESERVING:
+		return 1;
+	case XNU_PC_XATTR_SIZE_BITS:
+		return 32;
+	}
+
+	int linux_name;
+	if (name >= 1 && name <= 9) {
+		linux_name = name - 1;
+	} else if (name == XNU_PC_FILESIZEBITS) {
+		linux_name = _PC_FILESIZEBITS;
+	} else if (name == XNU_PC_SYMLINK_MAX) {
+		linux_name = _PC_SYMLINK_MAX;
+	} else {
+		unimplemented();
+	}
+
+	errno = 0;
+	long value = fpathconf(fd, linux_name);
+	if (value == -1 && errno != 0) {
+		return err_map(errno);
+	}
+	return value;
 }
 
 int
 sys_sys_fpathconf(int fd, int name)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "sys_fpathconf(%p, %p)\n", (void *)fd, (void *)name);
+	fprintf(stderr, "sys_fpathconf(%d, %d)\n", fd, name);
 #endif
-	unimplemented();
+	return fpathconf_value(fd, name);
 }
 
 int
@@ -1616,103 +1696,14 @@ sys_poll(void *fds, uint32_t nfds, int timeout)
 	unimplemented();
 }
 
-user_ssize_t
-sys_getxattr(user_addr_t path, user_addr_t attrname, user_addr_t value,
-		size_t size, uint32_t position, int options)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "getxattr(%p, %p, %p, %p, %p, %p)\n", (void *)path,
-			(void *)attrname, (void *)value, (void *)size,
-			(void *)position, (void *)options);
-#endif
-	unimplemented();
-}
-
-user_ssize_t
-sys_fgetxattr(int fd, user_addr_t attrname, user_addr_t value, size_t size,
-		uint32_t position, int options)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "fgetxattr(%p, %p, %p, %p, %p, %p)\n", (void *)fd,
-			(void *)attrname, (void *)value, (void *)size,
-			(void *)position, (void *)options);
-#endif
-	unimplemented();
-}
-
-int
-sys_setxattr(user_addr_t path, user_addr_t attrname, user_addr_t value,
-		size_t size, uint32_t position, int options)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "setxattr(%p, %p, %p, %p, %p, %p)\n", (void *)path,
-			(void *)attrname, (void *)value, (void *)size,
-			(void *)position, (void *)options);
-#endif
-	unimplemented();
-}
-
-int
-sys_fsetxattr(int fd, user_addr_t attrname, user_addr_t value, size_t size,
-		uint32_t position, int options)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "fsetxattr(%p, %p, %p, %p, %p, %p)\n", (void *)fd,
-			(void *)attrname, (void *)value, (void *)size,
-			(void *)position, (void *)options);
-#endif
-	unimplemented();
-}
-
-int
-sys_removexattr(user_addr_t path, user_addr_t attrname, int options)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "removexattr(%p, %p, %p)\n", (void *)path,
-			(void *)attrname, (void *)options);
-#endif
-	unimplemented();
-}
-
-int
-sys_fremovexattr(int fd, user_addr_t attrname, int options)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "fremovexattr(%p, %p, %p)\n", (void *)fd,
-			(void *)attrname, (void *)options);
-#endif
-	unimplemented();
-}
-
-user_ssize_t
-sys_listxattr(user_addr_t path, user_addr_t namebuf, size_t bufsize,
-		int options)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "listxattr(%p, %p, %p, %p)\n", (void *)path,
-			(void *)namebuf, (void *)bufsize, (void *)options);
-#endif
-	unimplemented();
-}
-
-user_ssize_t
-sys_flistxattr(int fd, user_addr_t namebuf, size_t bufsize, int options)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "flistxattr(%p, %p, %p, %p)\n", (void *)fd,
-			(void *)namebuf, (void *)bufsize, (void *)options);
-#endif
-	unimplemented();
-}
-
 int
 sys_fsctl(const char *path, uint64_t cmd, void *data, uint32_t options)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "fsctl(%p, %p, %p, %p)\n", (void *)path, (void *)cmd,
+	fprintf(stderr, "fsctl(\"%s\", %p, %p, %p)\n", path, (void *)cmd,
 			(void *)data, (void *)options);
 #endif
-	unimplemented();
+	return _ENOTTY;
 }
 
 int
@@ -1745,7 +1736,7 @@ sys_ffsctl(int fd, uint64_t cmd, void *data, uint32_t options)
 	fprintf(stderr, "ffsctl(%p, %p, %p, %p)\n", (void *)fd, (void *)cmd,
 			(void *)data, (void *)options);
 #endif
-	unimplemented();
+	return _ENOTTY;
 }
 
 int
@@ -2502,7 +2493,10 @@ sys_lchown(user_addr_t path, void *owner, void *group)
 	fprintf(stderr, "lchown(%p, %p, %p)\n", (void *)path, (void *)owner,
 			(void *)group);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	return errno_map(lchown(
+			sysroot_host_path(path, AT_SYMLINK_NOFOLLOW, buffer),
+			(uid_t)(uintptr_t)owner, (gid_t)(uintptr_t)group));
 }
 
 int
@@ -2999,11 +2993,10 @@ sys_openat(int fd, user_addr_t path, int flags, int mode)
 	fprintf(stderr, "openat(%p, \"%s\", %p, %p)\n", (void *)fd,
 			(char *)path, (void *)flags, (void *)mode);
 #endif
-	/* TODO: Convert flags */
 	char buffer[PATH_MAX];
-	return errno_map(openat(fd,
+	return errno_map(openat(at_fd(fd),
 			sysroot_host_path(path, open_follow(flags), buffer),
-			flags, mode));
+			open_flags(flags), mode));
 }
 
 int
@@ -3013,7 +3006,7 @@ sys_renameat(int fromfd, char *from, int tofd, char *to)
 	fprintf(stderr, "renameat(%p, %p, %p, %p)\n", (void *)fromfd,
 			(void *)from, (void *)tofd, (void *)to);
 #endif
-	unimplemented();
+	return sys_renameatx_np(fromfd, from, tofd, to, 0);
 }
 
 int
@@ -3023,7 +3016,10 @@ sys_faccessat(int fd, user_addr_t path, int amode, int flag)
 	fprintf(stderr, "faccessat(%p, %p, %p, %p)\n", (void *)fd, (void *)path,
 			(void *)amode, (void *)flag);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	int flags = at_flags(flag);
+	return errno_map(faccessat(at_fd(fd),
+			sysroot_host_path(path, flags, buffer), amode, flags));
 }
 
 int
@@ -3033,7 +3029,10 @@ sys_fchmodat(int fd, user_addr_t path, int mode, int flag)
 	fprintf(stderr, "fchmodat(%p, %p, %p, %p)\n", (void *)fd, (void *)path,
 			(void *)mode, (void *)flag);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	int flags = at_flags(flag);
+	return errno_map(fchmodat(at_fd(fd),
+			sysroot_host_path(path, flags, buffer), mode, flags));
 }
 
 int
@@ -3043,7 +3042,11 @@ sys_fchownat(int fd, user_addr_t path, void *uid, void *gid, int flag)
 	fprintf(stderr, "fchownat(%p, %p, %p, %p, %p)\n", (void *)fd,
 			(void *)path, (void *)uid, (void *)gid, (void *)flag);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	int flags = at_flags(flag);
+	return errno_map(fchownat(at_fd(fd),
+			sysroot_host_path(path, flags, buffer),
+			(uid_t)(uintptr_t)uid, (gid_t)(uintptr_t)gid, flags));
 }
 
 int
@@ -3053,7 +3056,18 @@ sys_linkat(int fd1, user_addr_t path, int fd2, user_addr_t link, int flag)
 	fprintf(stderr, "linkat(%p, %p, %p, %p, %p)\n", (void *)fd1,
 			(void *)path, (void *)fd2, (void *)link, (void *)flag);
 #endif
-	unimplemented();
+	char path_buffer[PATH_MAX], link_buffer[PATH_MAX];
+	int flags = at_flags(flag);
+	return errno_map(linkat(at_fd(fd1),
+			sysroot_host_path(path,
+					(flags & AT_SYMLINK_FOLLOW)
+							? 0
+							: AT_SYMLINK_NOFOLLOW,
+					path_buffer),
+			at_fd(fd2),
+			sysroot_host_path(
+					link, AT_SYMLINK_NOFOLLOW, link_buffer),
+			flags));
 }
 
 int
@@ -3063,7 +3077,10 @@ sys_unlinkat(int fd, user_addr_t path, int flag)
 	fprintf(stderr, "unlinkat(%p, %p, %p)\n", (void *)fd, (void *)path,
 			(void *)flag);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	return errno_map(unlinkat(at_fd(fd),
+			sysroot_host_path(path, AT_SYMLINK_NOFOLLOW, buffer),
+			at_flags(flag)));
 }
 
 int
@@ -3073,7 +3090,10 @@ sys_readlinkat(int fd, user_addr_t path, user_addr_t buf, size_t bufsize)
 	fprintf(stderr, "readlinkat(%p, %p, %p, %p)\n", (void *)fd,
 			(void *)path, (void *)buf, (void *)bufsize);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	return errno_map(readlinkat(at_fd(fd),
+			sysroot_host_path(path, AT_SYMLINK_NOFOLLOW, buffer),
+			buf, bufsize));
 }
 
 int
@@ -3083,7 +3103,9 @@ sys_symlinkat(user_addr_t *path1, int fd, user_addr_t path2)
 	fprintf(stderr, "symlinkat(%p, %p, %p)\n", (void *)path1, (void *)fd,
 			(void *)path2);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	return errno_map(symlinkat((const char *)path1, at_fd(fd),
+			sysroot_host_path(path2, AT_SYMLINK_NOFOLLOW, buffer)));
 }
 
 int
@@ -3093,7 +3115,10 @@ sys_mkdirat(int fd, user_addr_t path, int mode)
 	fprintf(stderr, "mkdirat(%p, %p, %p)\n", (void *)fd, (void *)path,
 			(void *)mode);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	return errno_map(mkdirat(at_fd(fd),
+			sysroot_host_path(path, AT_SYMLINK_NOFOLLOW, buffer),
+			mode));
 }
 
 int
@@ -3200,7 +3225,29 @@ sys_renameatx_np(int fromfd, char *from, int tofd, char *to, uint32_t flags)
 	fprintf(stderr, "renameatx_np(%p, %p, %p, %p, %p)\n", (void *)fromfd,
 			(void *)from, (void *)tofd, (void *)to, (void *)flags);
 #endif
-	unimplemented();
+	char from_buffer[PATH_MAX], to_buffer[PATH_MAX];
+	return errno_map(renameat2(at_fd(fromfd),
+			sysroot_host_path(
+					from, AT_SYMLINK_NOFOLLOW, from_buffer),
+			at_fd(tofd),
+			sysroot_host_path(to, AT_SYMLINK_NOFOLLOW, to_buffer),
+			rename_flags(flags)));
+}
+
+#define _RENAME_SWAP 0x00000002
+#define _RENAME_EXCL 0x00000004
+
+static unsigned int
+rename_flags(uint32_t flags)
+{
+	unsigned int result = 0;
+	if (flags & _RENAME_SWAP) {
+		result |= RENAME_EXCHANGE;
+	}
+	if (flags & _RENAME_EXCL) {
+		result |= RENAME_NOREPLACE;
+	}
+	return result;
 }
 
 int

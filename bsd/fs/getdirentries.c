@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -29,11 +30,15 @@
 #define _GNU_SOURCE
 #endif
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -43,16 +48,6 @@ typedef size_t user_size_t;
 typedef ssize_t user_ssize_t;
 
 #define _MAXPATHLEN 1024
-
-#define _DT_UNKNOWN 0
-#define _DT_FIFO    1
-#define _DT_CHR     2
-#define _DT_DIR     4
-#define _DT_BLK     6
-#define _DT_REG     8
-#define _DT_LNK     10
-#define _DT_SOCK    12
-#define _DT_WHT     14
 
 struct __darwin_struct_dirent {
 	uint64_t d_ino;
@@ -70,82 +65,61 @@ sys_getdirentries64(int dirfd, void *buf, user_size_t bufsize, off_t *position)
 	fprintf(stderr, "getdirentries64(%p, %p, %p, %p)\n", (void *)dirfd,
 			(void *)buf, (void *)bufsize, (void *)position);
 #endif
-	DIR *dir = fdopendir(dup(dirfd));
-	if (dir == NULL) {
-#ifdef ENABLE_STRACE
-		perror("fdopendir");
-#endif
-		return 0;
-	}
-	struct dirent *d = readdir(dir);
-
-	/* No entries left, or an error */
-	if (d == NULL) {
-		closedir(dir);
-		return 0;
+	off_t start = lseek(dirfd, 0, SEEK_CUR);
+	if (start == -1) {
+		return err_map(errno);
 	}
 
-	struct __darwin_struct_dirent ent = {
-			.d_ino = d->d_ino,
-			.d_seekoff = d->d_off,
-			.d_reclen = sizeof(struct __darwin_struct_dirent)
-					- _MAXPATHLEN + strlen(d->d_name) + 1,
-			.d_namlen = strlen(d->d_name) + 1,
-	};
+	size_t used = 0;
+	off_t resume = start;
+	bool full = false;
+	char entries[4096];
+	while (true) {
+		long size = syscall(SYS_getdents64, dirfd, entries,
+				sizeof(entries));
+		if (size == -1) {
+			return err_map(errno);
+		}
+		if (size == 0) {
+			break;
+		}
 
-	switch (d->d_type) {
-	case DT_FIFO:
-		ent.d_type = DT_FIFO;
-		break;
-	case DT_CHR:
-		ent.d_type = _DT_CHR;
-		break;
-	case DT_BLK:
-		ent.d_type = DT_BLK;
-		break;
-	case DT_REG:
-		ent.d_type = _DT_REG;
-		break;
-	case DT_LNK:
-		ent.d_type = _DT_LNK;
-		break;
-	case DT_SOCK:
-		ent.d_type = _DT_SOCK;
-		break;
-	case DT_WHT:
-		ent.d_type = _DT_WHT;
-		break;
-	case DT_UNKNOWN:
-	default:
-		ent.d_type = _DT_UNKNOWN;
-		break;
+		for (long offset = 0; offset < size;) {
+			struct dirent64 *d
+					= (struct dirent64 *)(entries + offset);
+			size_t namlen = strlen(d->d_name);
+			size_t reclen = (offsetof(struct __darwin_struct_dirent,
+							 d_name)
+							+ namlen + 1 + 7)
+					& ~7;
+			if (used + reclen > bufsize) {
+				lseek(dirfd, resume, SEEK_SET);
+				full = true;
+				goto done;
+			}
+
+			struct __darwin_struct_dirent *ent = (struct
+					__darwin_struct_dirent *)((char *)buf
+					+ used);
+			ent->d_ino = d->d_ino;
+			ent->d_seekoff = d->d_off;
+			ent->d_reclen = reclen;
+			ent->d_namlen = namlen;
+			ent->d_type = d->d_type;
+			memcpy(ent->d_name, d->d_name, namlen + 1);
+
+			used += reclen;
+			resume = d->d_off;
+			offset += d->d_reclen;
+		}
 	}
 
-	/* TODO: Linux paths can be longer than MAXPATHLEN, should we truncate
-	 */
-	if (strlen(d->d_name) + 1 > _MAXPATHLEN) {
-		unimplemented();
+done:
+	if (used == 0 && full) {
+		return _EINVAL;
 	}
-
-	if (bufsize < ent.d_reclen) {
-		return _ERANGE;
-	}
-
-	memcpy(ent.d_name, d->d_name, strlen(d->d_name) + 1);
-
-	memcpy(buf, &ent, ent.d_reclen);
-
-	if (position) {
-		*position = lseek(dirfd, 0, SEEK_CUR);
-	}
-
-	/* Restore directory position */
-	seekdir(dir, telldir(dir));
-	closedir(dir);
-	return sizeof(ent);
-error:
-	closedir(dir);
-	return 0;
+	*position = start;
+	return used;
 }
 
 int

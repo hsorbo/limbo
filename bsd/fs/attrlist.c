@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,14 +31,20 @@
 #endif
 #include <dirent.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "at.h"
 #include "bsd/xnu-errno.h"
+#include "device.h"
+#include "sysroot.h"
 
 typedef uint32_t attrgroup_t;
 struct __darwin_attrlist {
@@ -64,7 +71,15 @@ typedef struct attrreference {
 	uint32_t attr_length;
 } attrreference_t;
 
-#define FSOPT_PACK_INVAL_ATTRS 8
+struct reference {
+	uint32_t offset;
+	const char *value;
+};
+
+#define FSOPT_NOFOLLOW          1
+#define FSOPT_REPORT_FULLSIZE   4
+#define FSOPT_PACK_INVAL_ATTRS  8
+#define FSOPT_ATTR_CMN_EXTENDED 0x20
 
 #define ATTR_CMN_NAME               0x00000001
 #define ATTR_CMN_DEVID              0x00000002
@@ -119,10 +134,17 @@ typedef struct attrreference {
 #define ATTR_VOL_ENCODINGSUSED   0x00010000
 #define ATTR_VOL_CAPABILITIES    0x00020000
 #define ATTR_VOL_UUID            0x00040000
+#define ATTR_VOL_MOUNTEXTFLAGS   0x00080000
+#define ATTR_VOL_FSTYPENAME      0x00100000
+#define ATTR_VOL_FSSUBTYPE       0x00200000
+#define ATTR_VOL_OWNER           0x00400000
 #define ATTR_VOL_QUOTA_SIZE      0x10000000
 #define ATTR_VOL_RESERVED_SIZE   0x20000000
 #define ATTR_VOL_ATTRIBUTES      0x40000000
 #define ATTR_VOL_INFO            0x80000000
+
+#define ATTR_DIR_LINKCOUNT   0x00000001
+#define ATTR_DIR_MOUNTSTATUS 0x00000004
 
 #define ATTR_FILE_LINKCOUNT     0x00000001
 #define ATTR_FILE_TOTALSIZE     0x00000002
@@ -135,6 +157,11 @@ typedef struct attrreference {
 #define ATTR_FILE_DATAALLOCSIZE 0x00000400
 #define ATTR_FILE_RSRCLENGTH    0x00001000
 #define ATTR_FILE_RSRCALLOCSIZE 0x00002000
+
+#define ATTR_CMNEXT_LINKID         0x00000010
+#define ATTR_CMNEXT_NOFIRMLINKPATH 0x00000020
+#define ATTR_CMNEXT_REALDEVID      0x00000040
+#define ATTR_CMNEXT_REALFSID       0x00000080
 
 typedef uint32_t __darwin_dev_t;
 typedef uint32_t fsobj_type_t;
@@ -167,35 +194,58 @@ typedef struct vol_capabilities_attr {
 	vol_capabilities_set_t valid;
 } vol_capabilities_attr_t;
 
+#define ATTRIBUTES_SIZE_MAX (2 * PATH_MAX + 4096)
+
+static int pack_attributes(int fd, const struct __darwin_attrlist *alistp,
+		uint64_t options, char *buffer);
+static int attrlist_open(int dirfd, const char *path, uint64_t options);
+static uint32_t pack_reference(char *buffer, uint32_t offset,
+		struct reference *references, uint32_t *reference_count,
+		const char *value);
+static uint32_t pack_reference_data(char *buffer, uint32_t offset,
+		const struct reference *reference);
+static uint32_t pack_timespec(
+		char *buffer, uint32_t offset, const struct timespec *ts);
+static uint32_t pack_u32(char *buffer, uint32_t offset, uint32_t value);
+static uint32_t pack_u64(char *buffer, uint32_t offset, uint64_t value);
+
 static int
 fgetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
-		uint64_t options, const char *nameHint)
+		uint64_t options)
 {
-	/* Because it is non-trivial to get the path name of a file from a file
-	 * descriptor on Linux, provide a hint that is passed to basename(3)
-	 * for ATTR_CMN_NAME */
-	if (nameHint == NULL) {
-		char path[1024] = {0};
-		char nameHintBuffer[1024] = {0};
-		snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
-		readlink(path, nameHintBuffer, sizeof(nameHintBuffer));
-		nameHint = nameHintBuffer;
+	char attributes[ATTRIBUTES_SIZE_MAX];
+	if (pack_attributes(fd, alist, options, attributes)) {
+		return 1;
 	}
 
-	struct __darwin_attrlist *alistp = (struct __darwin_attrlist *)alist;
-	char *buffer = (char *)attributeBuffer;
+	uint32_t length = *(uint32_t *)attributes;
+	uint32_t copied = (length < bufferSize) ? length : bufferSize;
+	memcpy(attributeBuffer, attributes, copied);
+	if (!(options & FSOPT_REPORT_FULLSIZE)) {
+		*(uint32_t *)attributeBuffer = copied;
+	}
+	return 0;
+}
+
+static int
+pack_attributes(int fd, const struct __darwin_attrlist *alistp,
+		uint64_t options, char *buffer)
+{
 	if (alistp->bitmapcount != ATTR_BIT_MAP_COUNT) {
 		errno = EINVAL;
 		return 1;
 	}
+#ifdef ENABLE_STRACE
+	fprintf(stderr,
+			"  attrlist(common=%#x, vol=%#x, dir=%#x, file=%#x, "
+			"fork=%#x)\n",
+			alistp->commonattr, alistp->volattr, alistp->dirattr,
+			alistp->fileattr, alistp->forkattr);
+#endif
 
-	if (alistp->dirattr || alistp->forkattr) {
+	if (alistp->forkattr && !(options & FSOPT_ATTR_CMN_EXTENDED)) {
 		unimplemented();
 	}
-
-	uint32_t commonattr = alistp->commonattr;
-	uint32_t volattr = alistp->volattr;
-	uint32_t fileattr = alistp->fileattr;
 
 	struct stat s = {0};
 	if (fstat(fd, &s)) {
@@ -205,50 +255,66 @@ fgetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
 		return 1;
 	}
 
-	/* TODO: Check bufferSize */
+	char link[32], host_path[PATH_MAX] = {0};
+	snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+	readlink(link, host_path, sizeof(host_path) - 1);
+	const char *path = sysroot_guest_path(host_path);
+
+	attribute_set_t returned = {
+			.commonattr = alistp->commonattr & ~ATTR_CMN_ERROR,
+			.volattr = alistp->volattr,
+			.dirattr = alistp->dirattr,
+			.fileattr = alistp->fileattr,
+			.forkattr = alistp->forkattr,
+	};
+	if (!(options & FSOPT_PACK_INVAL_ATTRS)) {
+		if (S_ISDIR(s.st_mode)) {
+			returned.fileattr = 0;
+		} else {
+			returned.dirattr = 0;
+		}
+	}
+
+	uint32_t commonattr = returned.commonattr;
+	uint32_t volattr = returned.volattr;
+	uint32_t dirattr = returned.dirattr;
+	uint32_t fileattr = returned.fileattr;
+	uint32_t cmnextattr = returned.forkattr;
 
 	/* Order must follow the definitions above, and be written to the buffer
 	 * all the same */
 
 	/* The buffer begins with a uint32_t size */
 	uint32_t offset = sizeof(uint32_t);
-	uint32_t name_reference_offset = 0;
-	uint32_t fullname_reference_offset = 0;
+	struct reference references[8];
+	uint32_t reference_count = 0;
 
-	if (alistp->commonattr & ATTR_CMN_RETURNED_ATTRS) {
-		attribute_set_t attr_set = {
-				.commonattr = alistp->commonattr,
-				.volattr = alistp->volattr,
-				.dirattr = alistp->dirattr,
-				.fileattr = alistp->fileattr,
-				.forkattr = alistp->forkattr,
-		};
-		memcpy(buffer + offset, &attr_set, sizeof(attr_set));
-		offset += sizeof(attr_set);
+	if (returned.commonattr & ATTR_CMN_RETURNED_ATTRS) {
+		memcpy(buffer + offset, &returned, sizeof(returned));
+		offset += sizeof(returned);
 		commonattr &= ~ATTR_CMN_RETURNED_ATTRS;
 	}
 
-	if (alistp->commonattr & ATTR_CMN_NAME) {
-		attrreference_t name_reference = {
-				.attr_dataoffset = 0,
-				.attr_length = 0,
-		};
-		/* Put the name after the attrreference_t */
-		memcpy(buffer + offset, &name_reference,
-				sizeof(name_reference));
-		name_reference_offset = offset;
-		offset += sizeof(name_reference);
+	if (returned.commonattr & ATTR_CMN_NAME) {
+		offset = pack_reference(buffer, offset, references,
+				&reference_count, basename(path));
 		commonattr &= ~ATTR_CMN_NAME;
 	}
 
-	if (alistp->commonattr & ATTR_CMN_DEVID) {
-		__darwin_dev_t d = s.st_dev;
+	if (returned.commonattr & ATTR_CMN_DEVID) {
+		__darwin_dev_t d = darwin_device(s.st_dev);
 		memcpy(buffer + offset, &d, sizeof(d));
 		offset += sizeof(d);
 		commonattr &= ~ATTR_CMN_DEVID;
 	}
 
-	if (alistp->commonattr & ATTR_CMN_OBJTYPE) {
+	if (returned.commonattr & ATTR_CMN_FSID) {
+		offset = pack_u32(buffer, offset, darwin_device(s.st_dev));
+		offset = pack_u32(buffer, offset, DARWIN_FSTYPE_APFS);
+		commonattr &= ~ATTR_CMN_FSID;
+	}
+
+	if (returned.commonattr & ATTR_CMN_OBJTYPE) {
 		fsobj_type_t type = VREG;
 		switch (s.st_mode & S_IFMT) {
 		case S_IFBLK:
@@ -276,7 +342,7 @@ fgetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
 		commonattr &= ~ATTR_CMN_OBJTYPE;
 	}
 
-	if (alistp->commonattr & ATTR_CMN_OBJID) {
+	if (returned.commonattr & ATTR_CMN_OBJID) {
 		fsobj_id_t id = {
 				.fid_objno
 				= s.st_ino, /* TODO: This isn't correct */
@@ -287,27 +353,82 @@ fgetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
 		commonattr &= ~ATTR_CMN_OBJID;
 	}
 
-	if (alistp->commonattr & ATTR_CMN_FILEID) {
+	if (returned.commonattr & ATTR_CMN_CRTIME) {
+		offset = pack_timespec(buffer, offset, &s.st_ctim);
+		commonattr &= ~ATTR_CMN_CRTIME;
+	}
+
+	if (returned.commonattr & ATTR_CMN_MODTIME) {
+		offset = pack_timespec(buffer, offset, &s.st_mtim);
+		commonattr &= ~ATTR_CMN_MODTIME;
+	}
+
+	if (returned.commonattr & ATTR_CMN_CHGTIME) {
+		offset = pack_timespec(buffer, offset, &s.st_ctim);
+		commonattr &= ~ATTR_CMN_CHGTIME;
+	}
+
+	if (returned.commonattr & ATTR_CMN_ACCTIME) {
+		offset = pack_timespec(buffer, offset, &s.st_atim);
+		commonattr &= ~ATTR_CMN_ACCTIME;
+	}
+
+	if (returned.commonattr & ATTR_CMN_OWNERID) {
+		offset = pack_u32(buffer, offset, s.st_uid);
+		commonattr &= ~ATTR_CMN_OWNERID;
+	}
+
+	if (returned.commonattr & ATTR_CMN_GRPID) {
+		offset = pack_u32(buffer, offset, s.st_gid);
+		commonattr &= ~ATTR_CMN_GRPID;
+	}
+
+	if (returned.commonattr & ATTR_CMN_ACCESSMASK) {
+		offset = pack_u32(buffer, offset, s.st_mode);
+		commonattr &= ~ATTR_CMN_ACCESSMASK;
+	}
+
+	if (returned.commonattr & ATTR_CMN_FLAGS) {
+		offset = pack_u32(buffer, offset, 0);
+		commonattr &= ~ATTR_CMN_FLAGS;
+	}
+
+	if (returned.commonattr & ATTR_CMN_FILEID) {
 		uint64_t ino = s.st_ino;
 		memcpy(buffer + offset, &ino, sizeof(ino));
 		offset += sizeof(uint64_t);
 		commonattr &= ~ATTR_CMN_FILEID;
 	}
 
-	if (alistp->commonattr & ATTR_CMN_FULLPATH) {
-		attrreference_t name_reference = {
-				.attr_dataoffset = 0,
-				.attr_length = 0,
-		};
-		/* Put the name after the attrreference_t */
-		memcpy(buffer + offset, &name_reference,
-				sizeof(name_reference));
-		fullname_reference_offset = offset;
-		offset += sizeof(name_reference);
+	if (returned.commonattr & ATTR_CMN_FULLPATH) {
+		offset = pack_reference(buffer, offset, references,
+				&reference_count, path);
 		commonattr &= ~ATTR_CMN_FULLPATH;
 	}
 
-	if (alistp->volattr & ATTR_VOL_MOUNTFLAGS) {
+	if (returned.commonattr & ATTR_CMN_DATA_PROTECT_FLAGS) {
+		offset = pack_u32(buffer, offset, 0);
+		commonattr &= ~ATTR_CMN_DATA_PROTECT_FLAGS;
+	}
+
+	if (returned.volattr & ATTR_VOL_FSTYPE) {
+		offset = pack_u32(buffer, offset, DARWIN_FSTYPE_APFS);
+		volattr &= ~ATTR_VOL_FSTYPE;
+	}
+
+	if (returned.volattr & ATTR_VOL_MOUNTPOINT) {
+		offset = pack_reference(buffer, offset, references,
+				&reference_count, "/");
+		volattr &= ~ATTR_VOL_MOUNTPOINT;
+	}
+
+	if (returned.volattr & ATTR_VOL_NAME) {
+		offset = pack_reference(buffer, offset, references,
+				&reference_count, "Macintosh HD");
+		volattr &= ~ATTR_VOL_NAME;
+	}
+
+	if (returned.volattr & ATTR_VOL_MOUNTFLAGS) {
 		/* TODO: Return converted mount flags? */
 		uint32_t flags = 0;
 		memcpy(buffer + offset, &flags, sizeof(flags));
@@ -315,46 +436,173 @@ fgetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
 		volattr &= ~ATTR_VOL_MOUNTFLAGS;
 	}
 
-	if (alistp->volattr & ATTR_VOL_CAPABILITIES) {
+	if (returned.volattr & ATTR_VOL_MOUNTEDDEVICE) {
+		offset = pack_reference(buffer, offset, references,
+				&reference_count, "/dev/disk1s1");
+		volattr &= ~ATTR_VOL_MOUNTEDDEVICE;
+	}
+
+	if (returned.volattr & ATTR_VOL_CAPABILITIES) {
 		vol_capabilities_attr_t cap = {0};
 		memcpy(buffer + offset, &cap, sizeof(cap));
 		offset += sizeof(cap);
 		volattr &= ~ATTR_VOL_CAPABILITIES;
 	}
 
-	if (alistp->volattr & ATTR_VOL_INFO) {
+	if (returned.volattr & ATTR_VOL_UUID) {
+		struct statfs fs;
+		fstatfs(fd, &fs);
+		uint64_t uuid[2] = {*(uint64_t *)&fs.f_fsid, s.st_dev};
+		memcpy(buffer + offset, uuid, sizeof(uuid));
+		offset += sizeof(uuid);
+		volattr &= ~ATTR_VOL_UUID;
+	}
+
+	if (returned.volattr & ATTR_VOL_MOUNTEXTFLAGS) {
+		offset = pack_u32(buffer, offset, 0);
+		volattr &= ~ATTR_VOL_MOUNTEXTFLAGS;
+	}
+
+	if (returned.volattr & ATTR_VOL_FSTYPENAME) {
+		offset = pack_reference(buffer, offset, references,
+				&reference_count, "apfs");
+		volattr &= ~ATTR_VOL_FSTYPENAME;
+	}
+
+	if (returned.volattr & ATTR_VOL_FSSUBTYPE) {
+		offset = pack_u32(buffer, offset, 0);
+		volattr &= ~ATTR_VOL_FSSUBTYPE;
+	}
+
+	if (returned.volattr & ATTR_VOL_OWNER) {
+		offset = pack_u32(buffer, offset, 0);
+		volattr &= ~ATTR_VOL_OWNER;
+	}
+
+	if (returned.volattr & ATTR_VOL_ATTRIBUTES) {
+		attribute_set_t supported = {
+				.commonattr = ATTR_CMN_NAME | ATTR_CMN_DEVID
+						| ATTR_CMN_FSID
+						| ATTR_CMN_OBJTYPE
+						| ATTR_CMN_OBJID
+						| ATTR_CMN_CRTIME
+						| ATTR_CMN_MODTIME
+						| ATTR_CMN_CHGTIME
+						| ATTR_CMN_ACCTIME
+						| ATTR_CMN_OWNERID
+						| ATTR_CMN_GRPID
+						| ATTR_CMN_ACCESSMASK
+						| ATTR_CMN_FLAGS
+						| ATTR_CMN_FILEID
+						| ATTR_CMN_FULLPATH
+						| ATTR_CMN_DATA_PROTECT_FLAGS
+						| ATTR_CMN_RETURNED_ATTRS,
+				.volattr = ATTR_VOL_FSTYPE | ATTR_VOL_MOUNTPOINT
+						| ATTR_VOL_NAME
+						| ATTR_VOL_MOUNTFLAGS
+						| ATTR_VOL_MOUNTEDDEVICE
+						| ATTR_VOL_CAPABILITIES
+						| ATTR_VOL_UUID
+						| ATTR_VOL_MOUNTEXTFLAGS
+						| ATTR_VOL_FSTYPENAME
+						| ATTR_VOL_FSSUBTYPE
+						| ATTR_VOL_OWNER
+						| ATTR_VOL_ATTRIBUTES
+						| ATTR_VOL_INFO,
+				.dirattr
+				= ATTR_DIR_LINKCOUNT | ATTR_DIR_MOUNTSTATUS,
+				.fileattr = ATTR_FILE_LINKCOUNT
+						| ATTR_FILE_TOTALSIZE
+						| ATTR_FILE_ALLOCSIZE
+						| ATTR_FILE_IOBLOCKSIZE
+						| ATTR_FILE_DEVTYPE
+						| ATTR_FILE_DATALENGTH
+						| ATTR_FILE_DATAALLOCSIZE,
+		};
+		memcpy(buffer + offset, &supported, sizeof(supported));
+		offset += sizeof(supported);
+		memcpy(buffer + offset, &supported, sizeof(supported));
+		offset += sizeof(supported);
+		volattr &= ~ATTR_VOL_ATTRIBUTES;
+	}
+
+	if (returned.volattr & ATTR_VOL_INFO) {
 		/* From the man pages, it looks like this does nothing */
 		volattr &= ~ATTR_VOL_INFO;
 	}
 
-	if (alistp->fileattr & ATTR_FILE_LINKCOUNT) {
-		uint32_t link_count = 0;
-		memcpy(buffer + offset, &link_count, sizeof(link_count));
-		offset += sizeof(link_count);
+	if (returned.dirattr & ATTR_DIR_LINKCOUNT) {
+		offset = pack_u32(buffer, offset, s.st_nlink);
+		dirattr &= ~ATTR_DIR_LINKCOUNT;
+	}
+
+	if (returned.dirattr & ATTR_DIR_MOUNTSTATUS) {
+		offset = pack_u32(buffer, offset, 0);
+		dirattr &= ~ATTR_DIR_MOUNTSTATUS;
+	}
+
+	if (returned.fileattr & ATTR_FILE_LINKCOUNT) {
+		offset = pack_u32(buffer, offset, s.st_nlink);
 		fileattr &= ~ATTR_FILE_LINKCOUNT;
 	}
 
-	/* Attribute reference goes at the end, then backpatch */
-	if (alistp->commonattr & ATTR_CMN_NAME) {
-		attrreference_t *reference = (attrreference_t *)(buffer
-				+ name_reference_offset);
-		/* Does not include the size */
-		reference->attr_dataoffset = offset - name_reference_offset;
-		char *path = basename(nameHint);
-		reference->attr_length = strlen(path) + 1;
-		memcpy(buffer + offset, path, reference->attr_length);
-		offset += reference->attr_length;
+	if (returned.fileattr & ATTR_FILE_TOTALSIZE) {
+		offset = pack_u64(buffer, offset, s.st_size);
+		fileattr &= ~ATTR_FILE_TOTALSIZE;
 	}
 
-	if (alistp->commonattr & ATTR_CMN_FULLPATH) {
-		/* TODO: This is hacky, will not work in all cases. BUGS R US */
-		attrreference_t *reference = (attrreference_t *)(buffer
-				+ fullname_reference_offset);
-		/* Does not include the size */
-		reference->attr_dataoffset = offset - fullname_reference_offset;
-		reference->attr_length = strlen(nameHint) + 1;
-		memcpy(buffer + offset, nameHint, reference->attr_length);
-		offset += reference->attr_length;
+	if (returned.fileattr & ATTR_FILE_ALLOCSIZE) {
+		offset = pack_u64(buffer, offset, s.st_blocks * 512);
+		fileattr &= ~ATTR_FILE_ALLOCSIZE;
+	}
+
+	if (returned.fileattr & ATTR_FILE_IOBLOCKSIZE) {
+		offset = pack_u32(buffer, offset, s.st_blksize);
+		fileattr &= ~ATTR_FILE_IOBLOCKSIZE;
+	}
+
+	if (returned.fileattr & ATTR_FILE_DEVTYPE) {
+		offset = pack_u32(buffer, offset,
+				S_ISBLK(s.st_mode) || S_ISCHR(s.st_mode)
+						? s.st_rdev
+						: 0);
+		fileattr &= ~ATTR_FILE_DEVTYPE;
+	}
+
+	if (returned.fileattr & ATTR_FILE_DATALENGTH) {
+		offset = pack_u64(buffer, offset, s.st_size);
+		fileattr &= ~ATTR_FILE_DATALENGTH;
+	}
+
+	if (returned.fileattr & ATTR_FILE_DATAALLOCSIZE) {
+		offset = pack_u64(buffer, offset, s.st_blocks * 512);
+		fileattr &= ~ATTR_FILE_DATAALLOCSIZE;
+	}
+
+	if (returned.forkattr & ATTR_CMNEXT_LINKID) {
+		offset = pack_u64(buffer, offset, s.st_ino);
+		cmnextattr &= ~ATTR_CMNEXT_LINKID;
+	}
+
+	if (returned.forkattr & ATTR_CMNEXT_NOFIRMLINKPATH) {
+		offset = pack_reference(buffer, offset, references,
+				&reference_count, path);
+		cmnextattr &= ~ATTR_CMNEXT_NOFIRMLINKPATH;
+	}
+
+	if (returned.forkattr & ATTR_CMNEXT_REALDEVID) {
+		offset = pack_u32(buffer, offset, darwin_device(s.st_dev));
+		cmnextattr &= ~ATTR_CMNEXT_REALDEVID;
+	}
+
+	if (returned.forkattr & ATTR_CMNEXT_REALFSID) {
+		offset = pack_u32(buffer, offset, darwin_device(s.st_dev));
+		offset = pack_u32(buffer, offset, DARWIN_FSTYPE_APFS);
+		cmnextattr &= ~ATTR_CMNEXT_REALFSID;
+	}
+
+	for (uint32_t i = 0; i < reference_count; i++) {
+		offset = pack_reference_data(buffer, offset, &references[i]);
 	}
 
 	if (commonattr) {
@@ -375,6 +623,14 @@ fgetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
 		unimplemented();
 	}
 
+	if (dirattr) {
+#ifdef ENABLE_STRACE
+		fprintf(stderr, ">> getattrlist unhandled dirattr flags: %x\n",
+				dirattr);
+#endif
+		unimplemented();
+	}
+
 	if (fileattr) {
 #ifdef ENABLE_STRACE
 		fprintf(stderr, ">> getattrlist unhandled fileattr flags: %x\n",
@@ -383,9 +639,62 @@ fgetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
 		unimplemented();
 	}
 
+	if (cmnextattr) {
+#ifdef ENABLE_STRACE
+		fprintf(stderr,
+				">> getattrlist unhandled cmnextattr flags: "
+				"%x\n",
+				cmnextattr);
+#endif
+		unimplemented();
+	}
+
 	/* Total aligned size is written to the beginning of the buffer */
 	*(uint32_t *)buffer = offset + (-offset & 3);
 	return 0;
+}
+
+static uint32_t
+pack_reference(char *buffer, uint32_t offset, struct reference *references,
+		uint32_t *reference_count, const char *value)
+{
+	attrreference_t reference = {0, 0};
+	memcpy(buffer + offset, &reference, sizeof(reference));
+	references[(*reference_count)++] = (struct reference){offset, value};
+	return offset + sizeof(reference);
+}
+
+static uint32_t
+pack_reference_data(char *buffer, uint32_t offset,
+		const struct reference *reference)
+{
+	attrreference_t *ref = (attrreference_t *)(buffer + reference->offset);
+	ref->attr_dataoffset = offset - reference->offset;
+	ref->attr_length = strlen(reference->value) + 1;
+	memcpy(buffer + offset, reference->value, ref->attr_length);
+	return offset + ((ref->attr_length + 3) & ~3);
+}
+
+static uint32_t
+pack_timespec(char *buffer, uint32_t offset, const struct timespec *ts)
+{
+	int64_t value[2] = {ts->tv_sec, ts->tv_nsec};
+	memcpy(buffer + offset, value, sizeof(value));
+	return offset + sizeof(value);
+}
+
+static uint32_t
+pack_u32(char *buffer, uint32_t offset, uint32_t value)
+{
+	memcpy(buffer + offset, &value, sizeof(value));
+	return offset + sizeof(value);
+}
+
+static uint32_t
+pack_u64(char *buffer, uint32_t offset, uint64_t value)
+{
+	memcpy(buffer + offset, &value, sizeof(value));
+	return offset + sizeof(value);
 }
 
 static int
@@ -404,43 +713,63 @@ sys_getattrlistbulk(int dirfd, void *alist, void *attributeBuffer,
 			(void *)alist, (void *)attributeBuffer,
 			(void *)bufferSize, (void *)options);
 #endif
-	/* To ease implementation and write getattrlistbulk in terms of
-	 * getattrlist, we return only one directory entry at a time */
-	DIR *dir = fdopendir(dup(dirfd));
-	struct dirent *d = readdir(dir);
-
-	/* No entries left, or an error */
-	if (d == NULL) {
-		closedir(dir);
-		return 0;
+	off_t start = lseek(dirfd, 0, SEEK_CUR);
+	if (start == -1) {
+		return err_map(errno);
 	}
 
-	int fd = openat(dirfd, d->d_name, O_RDONLY);
-	if (fd == -1) {
-#ifdef ENABLE_STRACE
-		perror("openat");
-#endif
-		goto error;
+	char entries[4096];
+	long size = syscall(SYS_getdents64, dirfd, entries, sizeof(entries));
+	if (size == -1) {
+		return err_map(errno);
 	}
 
-	/* TODO: Is this the right way to handle options */
-	if (fgetattrlist(fd, alist, attributeBuffer, bufferSize, options,
-			    d->d_name)) {
-#ifdef ENABLE_STRACE
-		perror("fgetattrlist");
-#endif
-		goto error;
+	char *buffer = attributeBuffer;
+	size_t used = 0;
+	int count = 0;
+	off_t resume = start;
+	bool full = false;
+	for (long offset = 0; offset < size;) {
+		struct dirent64 *d = (struct dirent64 *)(entries + offset);
+		offset += d->d_reclen;
+		if (strcmp(d->d_name, ".") == 0
+				|| strcmp(d->d_name, "..") == 0) {
+			resume = d->d_off;
+			continue;
+		}
+
+		char attributes[ATTRIBUTES_SIZE_MAX];
+		int fd = openat(dirfd, d->d_name, O_PATH | O_NOFOLLOW);
+		if (fd == -1) {
+			return err_map(errno);
+		}
+		int error = pack_attributes(fd, alist, options, attributes);
+		close(fd);
+		if (error) {
+			return err_map(errno);
+		}
+
+		uint32_t length = (*(uint32_t *)attributes + 7) & ~7;
+		if (used + length > bufferSize) {
+			full = true;
+			break;
+		}
+		*(uint32_t *)attributes = length;
+		memcpy(buffer + used, attributes, length);
+		used += length;
+		count++;
+		resume = d->d_off;
 	}
 
-	close(fd);
-	/* Restore directory position */
-	seekdir(dir, telldir(dir));
-	closedir(dir);
-	return 1;
-error:
-	close(fd);
-	closedir(dir);
-	return 0;
+	lseek(dirfd, resume, SEEK_SET);
+	if (count == 0 && full) {
+		return _EINVAL;
+	}
+	if (count == 0 && size != 0) {
+		return sys_getattrlistbulk(dirfd, alist, attributeBuffer,
+				bufferSize, options);
+	}
+	return count;
 }
 
 int
@@ -452,7 +781,7 @@ sys_getattrlist(const char *path, void *alist, void *attributeBuffer,
 			(void *)alist, (void *)attributeBuffer,
 			(void *)bufferSize, (void *)options);
 #endif
-	int fd = open(path, O_RDONLY);
+	int fd = attrlist_open(AT_FDCWD, path, options);
 	if (fd == -1) {
 #ifdef ENABLE_STRACE
 		perror("open");
@@ -460,8 +789,7 @@ sys_getattrlist(const char *path, void *alist, void *attributeBuffer,
 		return err_map(errno);
 	}
 
-	if (fgetattrlist(fd, alist, attributeBuffer, bufferSize, options,
-			    path)) {
+	if (fgetattrlist(fd, alist, attributeBuffer, bufferSize, options)) {
 		close(fd);
 		return err_map(errno);
 	}
@@ -505,8 +833,7 @@ sys_fgetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
 			(void *)alist, (void *)attributeBuffer,
 			(void *)bufferSize, (void *)options);
 #endif
-	if (fgetattrlist(fd, alist, attributeBuffer, bufferSize, options,
-			    NULL)) {
+	if (fgetattrlist(fd, alist, attributeBuffer, bufferSize, options)) {
 		return err_map(errno);
 	}
 
@@ -539,7 +866,7 @@ sys_getattrlistat(int dirfd, const char *path, void *alist,
 			(void *)attributeBuffer, (void *)bufferSize,
 			(void *)options);
 #endif
-	int fd = openat(dirfd, path, O_RDONLY);
+	int fd = attrlist_open(at_fd(dirfd), path, options);
 	if (fd == -1) {
 #ifdef ENABLE_STRACE
 		perror("open");
@@ -547,13 +874,12 @@ sys_getattrlistat(int dirfd, const char *path, void *alist,
 		return err_map(errno);
 	}
 
-	if (fgetattrlist(fd, alist, attributeBuffer, bufferSize, options,
-			    path)) {
-		close(dirfd);
+	if (fgetattrlist(fd, alist, attributeBuffer, bufferSize, options)) {
+		close(fd);
 		return err_map(errno);
 	}
 
-	close(dirfd);
+	close(fd);
 	return 0;
 }
 
@@ -582,4 +908,13 @@ sys_setattrlistat(int dirfd, const char *path, void *alist,
 
 	close(dirfd);
 	return 0;
+}
+
+static int
+attrlist_open(int dirfd, const char *path, uint64_t options)
+{
+	int flags = (options & FSOPT_NOFOLLOW) ? AT_SYMLINK_NOFOLLOW : 0;
+	char buffer[PATH_MAX];
+	return openat(dirfd, sysroot_host_path(path, flags, buffer),
+			O_PATH | ((flags != 0) ? O_NOFOLLOW : 0));
 }

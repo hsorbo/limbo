@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -28,6 +29,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -37,7 +39,10 @@
 #include <sys/vfs.h>
 #include <unistd.h>
 
+#include "at.h"
 #include "bsd/xnu-errno.h"
+#include "device.h"
+#include "sysroot.h"
 
 typedef void *user_addr_t;
 
@@ -107,88 +112,16 @@ struct __darwin_struct_statfs64 {
 	uint32_t f_reserved[7];
 };
 
-static inline void
-xnu_encode_statx_timespec(struct __darwin_user64_timespec *to,
-		struct statx_timestamp *from)
-{
-	to->tv_sec = from->tv_sec;
-	to->tv_nsec = from->tv_nsec;
-}
-
-static inline void
-convert_statx(struct statx *stat, struct __darwin_user64_stat64 *dest)
-{
-	dest->st_dev = stat->stx_dev_major;
-	dest->st_mode = stat->stx_mode;
-	dest->st_nlink = stat->stx_nlink;
-	dest->st_ino = stat->stx_ino;
-	dest->st_uid = stat->stx_uid;
-	dest->st_gid = stat->stx_gid;
-	dest->st_rdev = stat->stx_rdev_major;
-	xnu_encode_statx_timespec(&dest->st_atimespec, &stat->stx_atime);
-	xnu_encode_statx_timespec(&dest->st_mtimespec, &stat->stx_mtime);
-	xnu_encode_statx_timespec(&dest->st_ctimespec, &stat->stx_ctime);
-	xnu_encode_statx_timespec(&dest->st_birthtimespec, &stat->stx_btime);
-	dest->st_size = stat->stx_size;
-	dest->st_blocks = stat->stx_blocks;
-	dest->st_blksize = stat->stx_blksize;
-	dest->st_flags = 0;
-	dest->st_gen = 0;
-}
-
-static inline void
-convert_stat(struct stat *stat, struct __darwin_user64_stat64 *dest)
-{
-	/* TODO: Handle timespec, not sure how we get that from stat(2) */
-	/* TODO: Why, just make this statx */
-
-#define _S_IFMT   0170000
-#define _S_IFIFO  0010000
-#define _S_IFCHR  0020000
-#define _S_IFDIR  0040000
-#define _S_IFBLK  0060000
-#define _S_IFREG  0100000
-#define _S_IFLNK  0120000
-#define _S_IFSOCK 0140000
-
-	int mode;
-	switch (stat->st_mode & S_IFMT) {
-	case S_IFBLK:
-		mode = _S_IFBLK;
-		break;
-	case S_IFCHR:
-		mode = _S_IFCHR;
-		break;
-	case S_IFDIR:
-		mode = _S_IFDIR;
-		break;
-	case S_IFIFO:
-		mode = _S_IFIFO;
-		break;
-	case S_IFLNK:
-		mode = _S_IFLNK;
-		break;
-	case S_IFREG:
-		mode = _S_IFREG;
-		break;
-	case S_IFSOCK:
-		mode = _S_IFSOCK;
-		break;
-	default:
-		unimplemented();
-	}
-
-	dest->st_mode = stat->st_mode; // mode & _S_IFMT;
-	dest->st_nlink = stat->st_nlink;
-	dest->st_ino = stat->st_ino;
-	dest->st_uid = stat->st_uid;
-	dest->st_gid = stat->st_gid;
-	dest->st_size = stat->st_size;
-	dest->st_blocks = stat->st_blocks;
-	dest->st_blksize = stat->st_blksize;
-	dest->st_flags = 0;
-	dest->st_gen = 0;
-}
+static int stat_at(int fd, const char *path, int flags,
+		struct __darwin_user64_stat64 *ub);
+static int stat_extended_at(int fd, const char *path, int flags,
+		struct __darwin_user64_stat64 *ub, uint64_t *xsecurity_size);
+static void convert_statfs(const struct statfs *src, dev_t device,
+		struct __darwin_struct_statfs64 *dest);
+static void convert_statx(
+		struct statx *stat, struct __darwin_user64_stat64 *dest);
+static void encode_timespec(struct __darwin_user64_timespec *to,
+		struct statx_timestamp *from);
 
 int
 sys_getfsstat(user_addr_t buf, int bufsize, int flags)
@@ -242,17 +175,62 @@ sys_lstat(user_addr_t path, user_addr_t ub)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "lstat(%p, %p)\n", (void *)path, (void *)ub);
 #endif
+	return stat_at(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, ub);
+}
+
+static int
+stat_at(int fd, const char *path, int flags, struct __darwin_user64_stat64 *ub)
+{
+	char buffer[PATH_MAX];
 	struct statx tmp;
-	int status = statx(AT_FDCWD, (char *)path, AT_SYMLINK_NOFOLLOW,
-			STATX_ALL, &tmp);
-	if (status < 0) {
-#ifdef ENABLE_STRACE
-		perror("stat");
-#endif
+	if (statx(fd, sysroot_host_path(path, flags, buffer), flags,
+			    STATX_BASIC_STATS | STATX_BTIME, &tmp)
+			== -1) {
 		return err_map(errno);
 	}
-	convert_statx(&tmp, (void *)ub);
-	return status;
+	convert_statx(&tmp, ub);
+	return 0;
+}
+
+static void
+convert_statx(struct statx *stat, struct __darwin_user64_stat64 *dest)
+{
+	dest->st_dev = darwin_device(
+			makedev(stat->stx_dev_major, stat->stx_dev_minor));
+	dest->st_mode = stat->stx_mode;
+	dest->st_nlink = stat->stx_nlink;
+	dest->st_ino = stat->stx_ino;
+	dest->st_uid = stat->stx_uid;
+	dest->st_gid = stat->stx_gid;
+	dest->st_rdev = (stat->stx_rdev_major << 24) | stat->stx_rdev_minor;
+	encode_timespec(&dest->st_atimespec, &stat->stx_atime);
+	encode_timespec(&dest->st_mtimespec, &stat->stx_mtime);
+	encode_timespec(&dest->st_ctimespec, &stat->stx_ctime);
+	encode_timespec(&dest->st_birthtimespec, &stat->stx_btime);
+	dest->st_size = stat->stx_size;
+	dest->st_blocks = stat->stx_blocks;
+	dest->st_blksize = stat->stx_blksize;
+	dest->st_flags = 0;
+	dest->st_gen = 0;
+}
+
+static void
+encode_timespec(struct __darwin_user64_timespec *to,
+		struct statx_timestamp *from)
+{
+	to->tv_sec = from->tv_sec;
+	to->tv_nsec = from->tv_nsec;
+}
+
+static int
+stat_extended_at(int fd, const char *path, int flags,
+		struct __darwin_user64_stat64 *ub, uint64_t *xsecurity_size)
+{
+	int result = stat_at(fd, path, flags, ub);
+	if (result == 0 && xsecurity_size != NULL) {
+		*xsecurity_size = 0;
+	}
+	return result;
 }
 
 int
@@ -294,16 +272,7 @@ sys_stat64(user_addr_t path, user_addr_t ub)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "stat64(\"%s\", %p)\n", (char *)path, (void *)ub);
 #endif
-	struct statx tmp;
-	int status = statx(AT_FDCWD, (char *)path, 0, STATX_ALL, &tmp);
-	if (status < 0) {
-#ifdef ENABLE_STRACE
-		perror("stat");
-#endif
-		return err_map(errno);
-	}
-	convert_statx(&tmp, (void *)ub);
-	return status;
+	return stat_at(AT_FDCWD, path, 0, ub);
 }
 
 int
@@ -312,16 +281,7 @@ sys_sys_fstat64(int fd, user_addr_t ub)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "sys_fstat64(%p, %p)\n", (void *)fd, (void *)ub);
 #endif
-	struct stat tmp = {0};
-	int status = fstat(fd, &tmp);
-	if (status < 0) {
-#ifdef ENABLE_STRACE
-		perror("stat");
-#endif
-		return err_map(errno);
-	}
-	convert_stat(&tmp, (void *)ub);
-	return status;
+	return stat_at(fd, "", AT_EMPTY_PATH, ub);
 }
 
 int
@@ -330,17 +290,7 @@ sys_lstat64(user_addr_t path, user_addr_t ub)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "lstat64(\"%s\", %p)\n", (char *)path, (void *)ub);
 #endif
-	struct statx tmp;
-	int status = statx(AT_FDCWD, (char *)path, AT_SYMLINK_NOFOLLOW,
-			STATX_ALL, &tmp);
-	if (status < 0) {
-#ifdef ENABLE_STRACE
-		perror("stat");
-#endif
-		return err_map(errno);
-	}
-	convert_statx(&tmp, (void *)ub);
-	return status;
+	return stat_at(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, ub);
 }
 
 int
@@ -348,10 +298,10 @@ sys_stat64_extended(user_addr_t path, user_addr_t ub, user_addr_t xsecurity,
 		user_addr_t xsecurity_size)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "stat64_extended(%p, %p, %p, %p)\n", (void *)path,
+	fprintf(stderr, "stat64_extended(\"%s\", %p, %p, %p)\n", (char *)path,
 			(void *)ub, (void *)xsecurity, (void *)xsecurity_size);
 #endif
-	unimplemented();
+	return stat_extended_at(AT_FDCWD, path, 0, ub, xsecurity_size);
 }
 
 int
@@ -359,10 +309,11 @@ sys_lstat64_extended(user_addr_t path, user_addr_t ub, user_addr_t xsecurity,
 		user_addr_t xsecurity_size)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "lstat64_extended(%p, %p, %p, %p)\n", (void *)path,
+	fprintf(stderr, "lstat64_extended(\"%s\", %p, %p, %p)\n", (char *)path,
 			(void *)ub, (void *)xsecurity, (void *)xsecurity_size);
 #endif
-	unimplemented();
+	return stat_extended_at(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, ub,
+			xsecurity_size);
 }
 
 int
@@ -382,34 +333,44 @@ sys_statfs64(char *path, void *buf)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "statfs64(\"%s\", %p)\n", path, (void *)buf);
 #endif
+	char buffer[PATH_MAX];
+	const char *host_path = sysroot_host_path(path, 0, buffer);
 	struct statfs tmp = {0};
-	if (statfs(path, &tmp) == -1) {
+	struct stat st;
+	if (statfs(host_path, &tmp) == -1 || stat(host_path, &st) == -1) {
 #ifdef ENABLE_STRACE
 		perror("statfs");
 #endif
 		return err_map(errno);
 	}
-	struct __darwin_struct_statfs64 *statfs
-			= (struct __darwin_struct_statfs64 *)buf;
-	memset(statfs, 0, sizeof(*statfs));
+	convert_statfs(&tmp, st.st_dev, buf);
+	return 0;
+}
+
+static void
+convert_statfs(const struct statfs *src, dev_t device,
+		struct __darwin_struct_statfs64 *dest)
+{
+	memset(dest, 0, sizeof(*dest));
 	/* Technically this is f_iosize and distinct from f_bsize, but it is
 	 * correct enough */
-	statfs->f_bsize = tmp.f_bsize;
-	statfs->f_iosize = tmp.f_bsize;
-	statfs->f_blocks = tmp.f_blocks;
-	statfs->f_bfree = tmp.f_bfree;
-	statfs->f_bavail = tmp.f_bavail;
-	statfs->f_files = tmp.f_files;
-	statfs->f_ffree = tmp.f_ffree;
+	dest->f_bsize = src->f_bsize;
+	dest->f_iosize = src->f_bsize;
+	dest->f_blocks = src->f_blocks;
+	dest->f_bfree = src->f_bfree;
+	dest->f_bavail = src->f_bavail;
+	dest->f_files = src->f_files;
+	dest->f_ffree = src->f_ffree;
 	/* TODO: These are not going to be compatible */
-	statfs->f_fsid = tmp.f_fsid;
-	statfs->f_type = tmp.f_type;
+	dest->f_fsid.__val[0] = darwin_device(device);
+	dest->f_fsid.__val[1] = DARWIN_FSTYPE_APFS;
+	dest->f_type = src->f_type;
 	/* This makes dyld use getdirentries64, but I am not sure what it does,
 	 * it checks if the 0x20 bit is set */
-	statfs->f_flags = 0x20;
-	/* statfs->f_owner = tmp.f_owner; */
-	/* statfs->f_fssubtype = tmp.f_fssubtype; */
-	return 0;
+	dest->f_flags = 0x20;
+	strcpy(dest->f_fstypename, "apfs");
+	strcpy(dest->f_mntonname, "/");
+	strcpy(dest->f_mntfromname, "/dev/disk1s1");
 }
 
 int
@@ -419,32 +380,14 @@ sys_fstatfs64(int fd, void *buf)
 	fprintf(stderr, "fstatfs64(%p, %p)\n", (void *)fd, (void *)buf);
 #endif
 	struct statfs tmp = {0};
-	if (fstatfs(fd, &tmp) == -1) {
+	struct stat st;
+	if (fstatfs(fd, &tmp) == -1 || fstat(fd, &st) == -1) {
 #ifdef ENABLE_STRACE
 		perror("fstatfs");
 #endif
 		return err_map(errno);
 	}
-	struct __darwin_struct_statfs64 *statfs
-			= (struct __darwin_struct_statfs64 *)buf;
-	memset(statfs, 0, sizeof(*statfs));
-	/* Technically this is f_iosize and distinct from f_bsize, but it is
-	 * correct enough */
-	statfs->f_bsize = tmp.f_bsize;
-	statfs->f_iosize = tmp.f_bsize;
-	statfs->f_blocks = tmp.f_blocks;
-	statfs->f_bfree = tmp.f_bfree;
-	statfs->f_bavail = tmp.f_bavail;
-	statfs->f_files = tmp.f_files;
-	statfs->f_ffree = tmp.f_ffree;
-	/* TODO: These are not going to be compatible */
-	statfs->f_fsid = tmp.f_fsid;
-	statfs->f_type = tmp.f_type;
-	/* This makes dyld use getdirentries64, but I am not sure what it does,
-	 * it checks if the 0x20 bit is set */
-	statfs->f_flags = 0x20;
-	/* statfs->f_owner = tmp.f_owner; */
-	/* statfs->f_fssubtype = tmp.f_fssubtype; */
+	convert_statfs(&tmp, st.st_dev, buf);
 	return 0;
 }
 
@@ -455,7 +398,21 @@ sys_getfsstat64(user_addr_t buf, int bufsize, int flags)
 	fprintf(stderr, "getfsstat64(%p, %p, %p)\n", (void *)buf,
 			(void *)bufsize, (void *)flags);
 #endif
-	unimplemented();
+	if (buf == NULL
+			|| bufsize < (int)sizeof(
+					   struct __darwin_struct_statfs64)) {
+		return 1;
+	}
+
+	char buffer[PATH_MAX];
+	const char *host_path = sysroot_host_path("/", 0, buffer);
+	struct statfs tmp = {0};
+	struct stat st;
+	if (statfs(host_path, &tmp) == -1 || stat(host_path, &st) == -1) {
+		return err_map(errno);
+	}
+	convert_statfs(&tmp, st.st_dev, buf);
+	return 1;
 }
 
 int
@@ -468,8 +425,6 @@ sys_fstatat(int fd, user_addr_t path, user_addr_t ub, int flag)
 	unimplemented();
 }
 
-#define xnu_AT_FDCWD -2
-
 int
 sys_fstatat64(int fd, user_addr_t path, user_addr_t ub, int flag)
 {
@@ -477,18 +432,5 @@ sys_fstatat64(int fd, user_addr_t path, user_addr_t ub, int flag)
 	fprintf(stderr, "fstatat64(%p, %p, %p, %p)\n", (void *)fd, (void *)path,
 			(void *)ub, (void *)flag);
 #endif
-	if (fd == xnu_AT_FDCWD && flag == 0) {
-		struct statx tmp;
-		int status = statx(AT_FDCWD, (char *)path, 0, STATX_ALL, &tmp);
-		if (status < 0) {
-#ifdef ENABLE_STRACE
-			perror("stat");
-#endif
-			return err_map(errno);
-		}
-		convert_statx(&tmp, (void *)ub);
-		return status;
-	}
-
-	unimplemented();
+	return stat_at(at_fd(fd), path, at_flags(flag), ub);
 }

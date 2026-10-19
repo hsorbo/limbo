@@ -1,5 +1,6 @@
 /*
  * Copyright © 2021 Keegan Saunders
+ * Copyright © 2026 Ole André Vadla Ravnås
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -33,6 +34,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "bsd/xnu-errno.h"
+#include "sysroot.h"
 
 #define _F_DUPFD                    0
 #define _F_GETFD                    1
@@ -70,6 +74,7 @@
 #define _F_SETPROTECTIONCLASS       64
 #define _F_LOG2PHYS_EXT             65
 #define _F_GETLKPID                 66
+#define _F_DUPFD_CLOEXEC            67
 #define _F_SETSTATICCONTENT         68
 #define _F_MOVEDATAEXTENTS          69
 #define _F_SETBACKINGSTORE          70
@@ -107,6 +112,14 @@
 
 #define _MAXPATHLEN 1024
 
+#define _O_NONBLOCK 0x00000004
+#define _O_APPEND   0x00000008
+#define _O_ASYNC    0x00000040
+#define _O_FSYNC    0x00000080
+
+static int status_flags_to_darwin(int flags);
+static int status_flags_from_darwin(int flags);
+
 int
 sys_sys_fcntl(int fd, int cmd, long arg)
 {
@@ -120,15 +133,41 @@ sys_sys_fcntl(int fd, int cmd, long arg)
 		data[0] = data[1];
 		return 0;
 	} break;
+	case _F_DUPFD:
+		return errno_map(fcntl(fd, F_DUPFD, arg));
+	case _F_DUPFD_CLOEXEC:
+		return errno_map(fcntl(fd, F_DUPFD_CLOEXEC, arg));
+	case _F_GETFD:
+		return errno_map(fcntl(fd, F_GETFD));
 	case _F_SETFD:
+		return errno_map(fcntl(fd, F_SETFD, arg & FD_CLOEXEC));
+	case _F_GETFL: {
+		int flags = fcntl(fd, F_GETFL);
+		if (flags == -1) {
+			return err_map(errno);
+		}
+		return status_flags_to_darwin(flags);
+	}
+	case _F_SETFL:
+		return errno_map(fcntl(
+				fd, F_SETFL, status_flags_from_darwin(arg)));
+	case _F_FULLFSYNC:
+		return errno_map(fsync(fd));
+	case _F_NOCACHE:
+	case _F_SETNOSIGPIPE:
 		return 0;
-	case _F_GETFL:
-		return 0;
+	case _F_GETPROTECTIONCLASS:
+		return _ENOTSUP;
 	case _F_GETPATH: {
-		char path[4096];
-		snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
-		memset((void *)arg, 0, _MAXPATHLEN);
-		readlink(path, (void *)arg, _MAXPATHLEN);
+		char link[32], path[PATH_MAX];
+		snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+		ssize_t length = readlink(link, path, sizeof(path) - 1);
+		if (length == -1) {
+			return err_map(errno);
+		}
+		path[length] = '\0';
+		snprintf((char *)arg, _MAXPATHLEN, "%s",
+				sysroot_guest_path(path));
 		return 0;
 	} break;
 	case _F_CHECK_LV:
@@ -138,4 +177,39 @@ sys_sys_fcntl(int fd, int cmd, long arg)
 	}
 
 	unimplemented();
+}
+
+static int
+status_flags_to_darwin(int flags)
+{
+	int result = flags & O_ACCMODE;
+	if (flags & O_NONBLOCK) {
+		result |= _O_NONBLOCK;
+	}
+	if (flags & O_APPEND) {
+		result |= _O_APPEND;
+	}
+	if (flags & O_ASYNC) {
+		result |= _O_ASYNC;
+	}
+	if ((flags & O_SYNC) == O_SYNC) {
+		result |= _O_FSYNC;
+	}
+	return result;
+}
+
+static int
+status_flags_from_darwin(int flags)
+{
+	int result = 0;
+	if (flags & _O_NONBLOCK) {
+		result |= O_NONBLOCK;
+	}
+	if (flags & _O_APPEND) {
+		result |= O_APPEND;
+	}
+	if (flags & _O_ASYNC) {
+		result |= O_ASYNC;
+	}
+	return result;
 }
