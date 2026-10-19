@@ -4808,9 +4808,7 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		return sys_proc_info_extended_id(arg1, arg2, arg3, arg4, arg5,
 				arg6, (void *)sp[1], sp[2]);
 	default:
-#ifdef ENABLE_STRACE
-		printf(">> Missing BSD system call: %#lx\n", syscall);
-#endif
-		return 0;
+		fprintf(stderr, ">> Missing BSD system call: %#lx\n", syscall);
+		unimplemented();
 	}
 }

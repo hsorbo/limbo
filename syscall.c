@@ -30,6 +30,7 @@
 #define _GNU_SOURCE
 #endif
 
+#include <asm/processor-flags.h>
 #include <elf.h>
 #include <signal.h>
 #include <stdio.h>
@@ -40,6 +41,7 @@
 #include <ucontext.h>
 
 #include "bsd/handler.h"
+#include "bsd/xnu-errno.h"
 #include "mdep/handler.h"
 #include "osfmk/handler.h"
 #include "syscall.h"
@@ -48,6 +50,7 @@
 static const uint8_t selector = SYSCALL_DISPATCH_FILTER_BLOCK;
 
 static void handle_syscall(int sig, siginfo_t *info, void *ucontext);
+static void set_bsd_result(greg_t *regs, int64_t result);
 
 int
 syscall_handler_install(void)
@@ -106,17 +109,15 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 	uint64_t arg6 = regs[REG_R9];
 	uint64_t *sp = (uint64_t *)regs[REG_RSP];
 
-	/* Remove all status flags */
-	regs[REG_EFL] = 0;
-
 	unsigned long syscall = info->si_syscall;
 	if (syscall >= SYSCALL_CLASS_MACH && syscall < SYSCALL_CLASS_UNIX) {
 		regs[REG_RAX] = sys_osfmk(syscall - SYSCALL_CLASS_MACH, arg1,
 				arg2, arg3, arg4, arg5, arg6, sp);
 	} else if (syscall >= SYSCALL_CLASS_UNIX
 			&& syscall < SYSCALL_CLASS_MDEP) {
-		regs[REG_RAX] = sys_bsd(syscall - SYSCALL_CLASS_UNIX, arg1,
+		int64_t result = sys_bsd(syscall - SYSCALL_CLASS_UNIX, arg1,
 				arg2, arg3, arg4, arg5, arg6, sp);
+		set_bsd_result(regs, result);
 	} else if (syscall >= SYSCALL_CLASS_MDEP
 			&& syscall < SYSCALL_CLASS_DIAG) {
 		regs[REG_RAX] = sys_mdep(syscall - SYSCALL_CLASS_MDEP, arg1,
@@ -126,6 +127,18 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 		fprintf(stderr, ">> Missing system call: %#lx", syscall);
 #endif
 		abort();
+	}
+}
+
+static void
+set_bsd_result(greg_t *regs, int64_t result)
+{
+	if (result < 0 && result >= _ELAST) {
+		regs[REG_EFL] |= X86_EFLAGS_CF;
+		regs[REG_RAX] = -result;
+	} else {
+		regs[REG_EFL] &= ~X86_EFLAGS_CF;
+		regs[REG_RAX] = result;
 	}
 }
 

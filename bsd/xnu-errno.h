@@ -144,10 +144,6 @@ static inline int
 err_map(int err)
 {
 	/* TODO: Decide the fate of missing Darwin error codes */
-	if (err >= 0) {
-		return err;
-	}
-
 	switch (err) {
 	case EPERM:
 		return _EPERM;
