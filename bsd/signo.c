@@ -92,3 +92,16 @@ sigset_to_linux(uint32_t darwin_set, sigset_t *set)
 		}
 	}
 }
+
+uint32_t
+sigset_from_linux(const sigset_t *set)
+{
+	uint32_t result = 0;
+	for (int i = 1; i < DARWIN_NSIG; i++) {
+		if (linux_signals[i] != 0
+				&& sigismember(set, linux_signals[i])) {
+			result |= 1U << (i - 1);
+		}
+	}
+	return result;
+}

@@ -33,3 +33,4 @@
 int signo_to_linux(int signo);
 int signo_from_linux(int signo);
 void sigset_to_linux(uint32_t darwin_set, sigset_t *set);
+uint32_t sigset_from_linux(const sigset_t *set);

@@ -161,6 +161,7 @@ static int fpathconf_value(int fd, int name);
 static struct timeval *convert_timevals(
 		const void *tptr, struct timeval *times);
 static unsigned int rename_flags(uint32_t flags);
+static int signal_mask(int how, const uint32_t *set, uint32_t *oset);
 static int rlimit_resource(uint32_t which);
 static uint64_t rlimit_to_darwin(rlim_t value);
 static rlim_t rlimit_from_darwin(uint64_t value);
@@ -609,7 +610,34 @@ sys_sigprocmask(int how, user_addr_t mask, user_addr_t omask)
 	fprintf(stderr, "sigprocmask(%p, %p, %p)\n", (void *)how, (void *)mask,
 			(void *)omask);
 #endif
-	/* TODO: Handle this */
+	return signal_mask(how, mask, omask);
+}
+
+#define _SIG_BLOCK   1
+#define _SIG_SETMASK 3
+
+static int
+signal_mask(int how, const uint32_t *set, uint32_t *oset)
+{
+	sigset_t linux_set, old;
+	sigset_t *new_set = NULL;
+	if (set != NULL) {
+		if (how < _SIG_BLOCK || how > _SIG_SETMASK) {
+			return _EINVAL;
+		}
+		sigset_to_linux(*set, &linux_set);
+		sigdelset(&linux_set, SIGSYS);
+		new_set = &linux_set;
+	}
+
+	int error = pthread_sigmask(
+			how - _SIG_BLOCK + SIG_BLOCK, new_set, &old);
+	if (error != 0) {
+		return err_map(error);
+	}
+	if (oset != NULL) {
+		*oset = sigset_from_linux(&old);
+	}
 	return 0;
 }
 
@@ -2408,8 +2436,7 @@ sys___pthread_sigmask(int how, user_addr_t set, user_addr_t oset)
 	fprintf(stderr, "__pthread_sigmask(%p, %p, %p)\n", (void *)how,
 			(void *)set, (void *)oset);
 #endif
-	/* TODO: Handle */
-	return 0;
+	return signal_mask(how, set, oset);
 }
 
 int
