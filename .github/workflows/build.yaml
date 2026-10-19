@@ -1,34 +1,96 @@
 name: build
 on: [ push, pull_request ]
 jobs:
-  build:
-    runs-on: ubuntu-20.04
-    container: public.ecr.aws/ubuntu/ubuntu:21.04
+  sysroot:
+    runs-on: macos-26-intel
+    outputs:
+      key: ${{ steps.key.outputs.key }}
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v7
+
+    - id: key
+      run: |
+        os=$(sw_vers -buildVersion)
+        xcode=$(xcodebuild -version | awk '/Build version/ { print $3 }')
+        echo "key=sysroot-$os-$xcode-${{ hashFiles('etc/make-sysroot') }}" >> "$GITHUB_OUTPUT"
+      name: Compute sysroot cache key
+
+    - id: lookup
+      uses: actions/cache/restore@v6
+      with:
+        path: sysroot.tar.zst
+        key: ${{ steps.key.outputs.key }}
+        lookup-only: true
+        enableCrossOsArchive: true
+      name: Look up sysroot
+
+    - if: steps.lookup.outputs.cache-hit != 'true'
+      run: etc/make-sysroot | zstd -T0 -3 -o sysroot.tar.zst
+      shell: bash
+      name: Make sysroot
+
+    - if: steps.lookup.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: sysroot.tar.zst
+        key: ${{ steps.key.outputs.key }}
+        enableCrossOsArchive: true
+      name: Save sysroot
+
+  build:
+    needs: sysroot
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v7
       with:
         fetch-depth: 0
 
     - run: |
-        apt-get update
-        apt-get install --no-install-recommends -y meson scdoc gcc libc6-dev
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y meson ninja-build scdoc gcc libc6-dev zstd
       name: Install build tools
 
-    - run: meson -Dprefix=$(pwd)/out build
+    - run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet
+      name: Free disk space
+
+    - uses: actions/cache/restore@v6
+      with:
+        path: sysroot.tar.zst
+        key: ${{ needs.sysroot.outputs.key }}
+        fail-on-cache-miss: true
+        enableCrossOsArchive: true
+      name: Restore sysroot
+
+    - run: |
+        mkdir sysroot
+        tar --zstd -xf sysroot.tar.zst -C sysroot
+        rm sysroot.tar.zst
+      name: Extract sysroot
+
+    - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      name: Allow user namespaces
+
+    - run: meson setup -Dprefix=$(pwd)/out build
       name: Configure limbo
 
     - run: ninja -C build install
       name: Build limbo
 
-    - uses: actions/upload-artifact@v2
+    - run: meson test -C build --print-errorlogs
+      env:
+        LIMBO_SYSROOT: ${{ github.workspace }}/sysroot
+      name: Test limbo
+
+    - uses: actions/upload-artifact@v7
       with:
         name: limbo-binaries-${{ github.run_number }}
         path: |
           out
       name: Upload binaries
 
-    - uses: actions/upload-artifact@v2
+    - uses: actions/upload-artifact@v7
       with:
         name: limbo-logs-${{ github.run_number }}
         path: |

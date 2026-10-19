@@ -66,6 +66,10 @@ Run the test suite with `meson test -C build`. It consists of two suites:
 To add a guest test, write a C or C++ program in `tests/guest` that uses
 `CHECK()` from `tests/check.h`, and list it in `tests/meson.build`.
 
+CI runs both suites. It builds the sysroot with `etc/make-sysroot` on a macOS
+runner and caches it until the runner's macOS or Xcode changes, or the script
+does.
+
 ## Debugging
 
 To debug Limbo, run your program under `gdbserver`:
