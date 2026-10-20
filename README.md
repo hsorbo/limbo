@@ -148,10 +148,22 @@ system calls that occur outside of this region result in a `SIGSYS`. Limbo then
 sets a `SIGSYS` handler as the entry point into the XNU emulation routine.
 
 Next, Limbo maps the dyld shared cache and its subcaches at their preferred
-address and rebases them. The cache spans most of the top of the address space,
-where Linux would otherwise place the stack, the vDSO and its mmap area, so Limbo
-first re-executes itself with address space layout randomization disabled, which
+address. The cache spans most of the top of the address space, where Linux
+would otherwise place the stack, the vDSO and its mmap area, so Limbo first
+re-executes itself with address space layout randomization disabled, which
 moves all of those out of the way.
+
+The cache's pointers must be rebased before use, which is too costly to do in
+every process, so the first process to start prepares a copy of the cache in
+`/private/var/db/limbo` inside the sysroot, keyed by the cache's UUID. The copy
+is a reflink clone where possible, and holds the rebased pointers, which lets
+processes share those pages instead of each writing their own. Darwin's
+`libmalloc` and a few other libraries read the CPU number with `SIDT`, which
+XNU allows but Linux turns into a slow emulated trap, so the prepared copy also
+redirects each `SIDT` to a trampoline that reads the CPU number with `RDPID`.
+
+Guest processes run with transparent huge pages disabled, as Darwin's
+allocators reserve large regions and touch them sparsely.
 
 Absolute paths passed to file system calls are resolved inside the sysroot
 using `openat2(2)` with `RESOLVE_IN_ROOT`, which keeps symbolic links and `..`

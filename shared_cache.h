@@ -109,6 +109,14 @@ typedef struct {
 } dyld_cache_header_t;
 
 typedef struct {
+	uint64_t address;
+	uint64_t modTime;
+	uint64_t inode;
+	uint32_t pathFileOffset;
+	uint32_t pad;
+} dyld_cache_image_info_t;
+
+typedef struct {
 	uint8_t uuid[16];
 	uint64_t cacheVMOffset;
 	char fileSuffix[32];
