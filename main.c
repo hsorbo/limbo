@@ -95,6 +95,7 @@ run(int argc, char *argv[], char *envp[])
 		goto error;
 	}
 	prctl(PR_SET_NAME, basename(argv[1]));
+	prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
 
 	/* Map the shared cache into our memory space, persisted across fork()
 	 */
