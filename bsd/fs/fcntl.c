@@ -154,6 +154,7 @@ sys_sys_fcntl(int fd, int cmd, long arg)
 	case _F_FULLFSYNC:
 		return errno_map(fsync(fd));
 	case _F_NOCACHE:
+	case _F_SINGLE_WRITER:
 	case _F_SETNOSIGPIPE:
 		return 0;
 	case _F_GETPROTECTIONCLASS:

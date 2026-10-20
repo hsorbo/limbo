@@ -324,7 +324,7 @@ sys_sys_fstat64_extended(int fd, user_addr_t ub, user_addr_t xsecurity,
 	fprintf(stderr, "sys_fstat64_extended(%p, %p, %p, %p)\n", (void *)fd,
 			(void *)ub, (void *)xsecurity, (void *)xsecurity_size);
 #endif
-	unimplemented();
+	return stat_extended_at(fd, "", AT_EMPTY_PATH, ub, xsecurity_size);
 }
 
 int

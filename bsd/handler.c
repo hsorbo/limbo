@@ -48,6 +48,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/auxv.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/random.h>
@@ -71,6 +72,9 @@
 #include "sysroot.h"
 #include "thread.h"
 #include "xnu-errno.h"
+
+#define KAUTH_UID_NONE (~(uid_t)0 - 100)
+#define KAUTH_GID_NONE (~(gid_t)0 - 100)
 
 int
 sys_nosys(void)
@@ -515,7 +519,10 @@ sys_fchflags(int fd, int flags)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "fchflags(%p, %p)\n", (void *)fd, (void *)flags);
 #endif
-	unimplemented();
+	if (flags != 0) {
+		unimplemented();
+	}
+	return 0;
 }
 
 int
@@ -1179,7 +1186,7 @@ sys_sys_flock(int fd, int how)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "sys_flock(%p, %p)\n", (void *)fd, (void *)how);
 #endif
-	unimplemented();
+	return errno_map(flock(fd, how));
 }
 
 int
@@ -2142,14 +2149,25 @@ sys_chmod_extended(user_addr_t path, void *uid, void *gid, int mode,
 
 int
 sys_fchmod_extended(
-		int fd, void *uid, void *gid, int mode, user_addr_t xsecurity)
+		int fd, uid_t uid, gid_t gid, int mode, user_addr_t xsecurity)
 {
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "fchmod_extended(%p, %p, %p, %p, %p)\n", (void *)fd,
 			(void *)uid, (void *)gid, (void *)mode,
 			(void *)xsecurity);
 #endif
-	unimplemented();
+	if (xsecurity != NULL) {
+		unimplemented();
+	}
+	if (fchown(fd, (uid == KAUTH_UID_NONE) ? (uid_t)-1 : uid,
+			    (gid == KAUTH_GID_NONE) ? (gid_t)-1 : gid)
+			== -1) {
+		return err_map(errno);
+	}
+	if (mode == -1) {
+		return 0;
+	}
+	return errno_map(fchmod(fd, mode & ALLPERMS));
 }
 
 int
@@ -4352,8 +4370,8 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		return sys_chmod_extended((void *)arg1, (void *)arg2,
 				(void *)arg3, arg4, (void *)arg5);
 	case 0x11b:
-		return sys_fchmod_extended(arg1, (void *)arg2, (void *)arg3,
-				arg4, (void *)arg5);
+		return sys_fchmod_extended(
+				arg1, arg2, arg3, arg4, (void *)arg5);
 	case 0x11c:
 		return sys_access_extended(
 				(void *)arg1, arg2, (void *)arg3, (void *)arg4);

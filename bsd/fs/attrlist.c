@@ -210,6 +210,7 @@ static uint32_t pack_timespec(
 		char *buffer, uint32_t offset, const struct timespec *ts);
 static uint32_t pack_u32(char *buffer, uint32_t offset, uint32_t value);
 static uint32_t pack_u64(char *buffer, uint32_t offset, uint64_t value);
+static const char *unpack_timespec(const char *buffer, struct timespec *ts);
 
 static int
 fgetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
@@ -749,7 +750,42 @@ static int
 fsetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
 		uint64_t options)
 {
-	unimplemented();
+	const struct __darwin_attrlist *alistp = alist;
+#ifdef ENABLE_STRACE
+	fprintf(stderr,
+			"  attrlist(common=%#x, vol=%#x, dir=%#x, file=%#x, "
+			"fork=%#x)\n",
+			alistp->commonattr, alistp->volattr, alistp->dirattr,
+			alistp->fileattr, alistp->forkattr);
+#endif
+	if ((alistp->commonattr & ~(ATTR_CMN_MODTIME | ATTR_CMN_ACCTIME))
+			|| alistp->volattr || alistp->dirattr
+			|| alistp->fileattr || alistp->forkattr) {
+		unimplemented();
+	}
+
+	struct timespec times[2] = {
+			{.tv_nsec = UTIME_OMIT},
+			{.tv_nsec = UTIME_OMIT},
+	};
+	const char *cursor = attributeBuffer;
+	if (alistp->commonattr & ATTR_CMN_MODTIME) {
+		cursor = unpack_timespec(cursor, &times[1]);
+	}
+	if (alistp->commonattr & ATTR_CMN_ACCTIME) {
+		cursor = unpack_timespec(cursor, &times[0]);
+	}
+	return futimens(fd, times);
+}
+
+static const char *
+unpack_timespec(const char *buffer, struct timespec *ts)
+{
+	int64_t value[2];
+	memcpy(value, buffer, sizeof(value));
+	ts->tv_sec = value[0];
+	ts->tv_nsec = value[1];
+	return buffer + sizeof(value);
 }
 
 int

@@ -66,7 +66,7 @@ sysroot_open(void)
 const char *
 sysroot_host_path(const char *path, int flags, char *buffer)
 {
-	if (root_length == 0 || path[0] != '/') {
+	if (path == NULL || root_length == 0 || path[0] != '/') {
 		return path;
 	}
 

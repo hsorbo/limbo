@@ -25,6 +25,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <copyfile.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -33,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/attr.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/vnode.h>
@@ -44,6 +46,7 @@
 static void check_files(void);
 static void check_directories(void);
 static void check_attributes(void);
+static void check_copyfile(void);
 static void check_xattrs(void);
 static void write_file(const char *path, const char *contents);
 static int count_entries(const char *path);
@@ -58,6 +61,7 @@ main(void)
 	check_files();
 	check_directories();
 	check_attributes();
+	check_copyfile();
 	check_xattrs();
 
 	CHECK(chdir("/") == 0);
@@ -106,7 +110,13 @@ check_files(void)
 	CHECK(strcmp(strrchr(path, '/'), "/a") == 0);
 	CHECK(write(fd, "ta", 2) == 2);
 	CHECK(fstat(fd, &st) == 0 && st.st_size == 4);
+	CHECK(flock(fd, LOCK_EX | LOCK_NB) == 0);
+	CHECK(flock(fd, LOCK_UN) == 0);
+	CHECK(fcntl(fd, F_SINGLE_WRITER, 1) == 0);
+	CHECK(fchflags(fd, 0) == 0);
 	CHECK(close(fd) == 0);
+
+	CHECK(stat(NULL, &st) == -1 && errno == EFAULT);
 
 	write_file("e", "other");
 	CHECK(renamex_np("a", "e", RENAME_SWAP) == 0);
@@ -164,7 +174,38 @@ check_attributes(void)
 			      "attributes")
 			== 0);
 	CHECK(pathconf("attributes", _PC_NAME_MAX) >= 255);
+
+	struct attrlist times_request = {
+			.bitmapcount = ATTR_BIT_MAP_COUNT,
+			.commonattr = ATTR_CMN_MODTIME | ATTR_CMN_ACCTIME,
+	};
+	struct timespec times[2] = {{1000000000, 0}, {1100000000, 0}};
+	int fd = open("attributes", O_RDONLY);
+	CHECK(fd != -1);
+	CHECK(fsetattrlist(fd, &times_request, times, sizeof(times), 0) == 0);
+	CHECK(close(fd) == 0);
+	struct stat st;
+	CHECK(stat("attributes", &st) == 0);
+	CHECK(st.st_mtime == 1000000000 && st.st_atime == 1100000000);
 	CHECK(unlink("attributes") == 0);
+}
+
+static void
+check_copyfile(void)
+{
+	write_file("source", "data");
+	CHECK(chmod("source", 0640) == 0);
+	int fd = open("destination", O_CREAT | O_WRONLY, 0600);
+	CHECK(fd != -1);
+	copyfile_state_t state = copyfile_state_alloc();
+	CHECK(copyfile_state_set(state, COPYFILE_STATE_DST_FD, &fd) == 0);
+	CHECK(copyfile("source", NULL, state, COPYFILE_METADATA) == 0);
+	CHECK(copyfile_state_free(state) == 0);
+	CHECK(close(fd) == 0);
+	struct stat st;
+	CHECK(stat("destination", &st) == 0 && (st.st_mode & 0777) == 0640);
+	CHECK(unlink("source") == 0);
+	CHECK(unlink("destination") == 0);
 }
 
 static void

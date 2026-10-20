@@ -25,9 +25,11 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdint.h>
 #include <stdio.h>
 
 #include "handler.h"
+#include "xnu-errno.h"
 
 #define MAC_MAX_POLICY_NAME 32
 
@@ -59,12 +61,39 @@ amfi_handle_check_dyld_policy_self_syscall(long arg)
 	return 0;
 }
 
+struct amfi_cdhash_in_trustcache_args {
+	uint64_t cdhash;
+	uint32_t cdhash_length;
+	uint64_t result;
+};
+
+static int
+amfi_handle_cdhash_in_trustcache_syscall(
+		struct amfi_cdhash_in_trustcache_args *args)
+{
+	args->result = 0;
+	return 0;
+}
+
 static int
 amfi_handle_syscall(int call, void *arg)
 {
 	switch (call) {
 	case 90:
 		return amfi_handle_check_dyld_policy_self_syscall((long)arg);
+	case 95:
+		return amfi_handle_cdhash_in_trustcache_syscall(arg);
+	default:
+		unimplemented();
+	}
+}
+
+static int
+quarantine_handle_syscall(int call)
+{
+	switch (call) {
+	case 82:
+		return _ENOATTR;
 	default:
 		unimplemented();
 	}
@@ -79,6 +108,8 @@ sys___mac_syscall(char *policy, int call, user_addr_t arg)
 #endif
 	if (strncmp(policy, "AMFI", MAC_MAX_POLICY_NAME) == 0) {
 		return amfi_handle_syscall(call, arg);
+	} else if (strncmp(policy, "Quarantine", MAC_MAX_POLICY_NAME) == 0) {
+		return quarantine_handle_syscall(call);
 	} else if (strncmp(policy, "Sandbox", MAC_MAX_POLICY_NAME) == 0) {
 		return 1;
 	} else {

@@ -269,7 +269,7 @@ int sys_sys_fstat_extended(int fd, user_addr_t ub, user_addr_t xsecurity,
 int sys_chmod_extended(user_addr_t path, void *uid, void *gid, int mode,
 		user_addr_t xsecurity);
 int sys_fchmod_extended(
-		int fd, void *uid, void *gid, int mode, user_addr_t xsecurity);
+		int fd, uid_t uid, gid_t gid, int mode, user_addr_t xsecurity);
 int sys_access_extended(user_addr_t entries, size_t size, user_addr_t results,
 		void *uid);
 int sys_settid(void *uid, void *gid);
