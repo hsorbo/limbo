@@ -64,6 +64,17 @@ limbo = executable('limbo',
   install: true,
 )
 
+limbo_broker = executable('limbo-broker',
+  sources: [
+    'broker.c',
+  ],
+  include_directories: include_dir,
+  link_args: [
+    '-static'
+  ],
+  install: true,
+)
+
 scdoc = find_program('scdoc', native: true, required: false)
 
 if scdoc.found()
