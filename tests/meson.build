@@ -36,3 +36,10 @@ foreach source : guest_tests
     timeout: 300,
   )
 endforeach
+
+test('ipc_broker', python,
+  args: [runner, limbo, files('guest' / 'ipc_broker.c'),
+    meson.current_build_dir(), limbo_broker],
+  suite: 'guest',
+  timeout: 300,
+)

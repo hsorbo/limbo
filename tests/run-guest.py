@@ -15,6 +15,7 @@ MAGICS = {
 
 def main():
     limbo, source, outdir = sys.argv[1:4]
+    broker = sys.argv[4] if len(sys.argv) > 4 else None
     sysroot = os.environ.get("LIMBO_SYSROOT")
     if sysroot is None:
         skip("LIMBO_SYSROOT is not set")
@@ -27,8 +28,22 @@ def main():
 
     register_binfmt(Path(limbo).resolve(), Path(outdir) / "binfmt")
     binary = compile_program(xcrun, Path(source), Path(outdir))
-    result = subprocess.run([binary], cwd=outdir, timeout=240)
+    broker_process = start_broker(broker, Path(outdir)) if broker else None
+    try:
+        result = subprocess.run([binary], cwd=outdir, timeout=240)
+    finally:
+        if broker_process is not None:
+            broker_process.terminate()
     sys.exit(result.returncode)
+
+
+def start_broker(broker, outdir):
+    socket_path = outdir / "broker.sock"
+    if socket_path.exists():
+        socket_path.unlink()
+    process = subprocess.Popen([broker, str(socket_path)])
+    os.environ["LIMBO_BROKER"] = str(socket_path)
+    return process
 
 
 def skip(reason):

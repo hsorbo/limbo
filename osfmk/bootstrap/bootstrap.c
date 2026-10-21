@@ -30,26 +30,31 @@
 #include <stdlib.h>
 
 #include "bootstrap.h"
+#include "ipc.h"
 
 kern_return_t
 bootstrap_check_in(mach_port_t bootstrap_port, name_t service_name,
 		mach_port_t *service_port)
 {
-	abort();
+	*service_port = ipc_service_check_in(service_name);
+	return KERN_SUCCESS;
 }
 
 kern_return_t
 bootstrap_register(mach_port_t bootstrap_port, name_t service_name,
 		mach_port_t service_port)
 {
-	abort();
+	ipc_service_register(service_name, service_port);
+	return KERN_SUCCESS;
 }
 
 kern_return_t
 bootstrap_look_up(mach_port_t bootstrap_port, name_t service_name,
 		mach_port_t *service_port)
 {
-	abort();
+	*service_port = ipc_service_look_up(service_name);
+	return (*service_port != MACH_PORT_NULL) ? KERN_SUCCESS
+						 : BOOTSTRAP_UNKNOWN_SERVICE;
 }
 
 kern_return_t

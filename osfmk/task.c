@@ -187,6 +187,9 @@ task_get_special_port(
 	case TASK_HOST_PORT:
 		*special_port = ipc_kobject_name(IPC_KOBJECT_HOST);
 		return KERN_SUCCESS;
+	case TASK_BOOTSTRAP_PORT:
+		*special_port = ipc_bootstrap_self();
+		return KERN_SUCCESS;
 	default:
 		if (which_port <= 0 || which_port > TASK_MAX_SPECIAL_PORT) {
 			return KERN_INVALID_ARGUMENT;

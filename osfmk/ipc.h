@@ -60,10 +60,12 @@ typedef enum {
 	IPC_KOBJECT_IO_MAIN,
 	IPC_KOBJECT_IO_OBJECT,
 	IPC_KOBJECT_SEMAPHORE,
+	IPC_KOBJECT_BOOTSTRAP,
 } ipc_kobject_type_t;
 
 mach_port_name_t ipc_task_self(void);
 mach_port_name_t ipc_host_self(void);
+mach_port_name_t ipc_bootstrap_self(void);
 mach_port_name_t ipc_kobject_name(ipc_kobject_type_t type);
 mach_port_name_t ipc_kobject_alloc(ipc_kobject_type_t type, void *kobject);
 mach_port_name_t ipc_kobject_copy_send(mach_port_name_t name);
@@ -77,6 +79,12 @@ mach_msg_return_t ipc_mach_msg(mach_msg_header_t *msg,
 		mach_msg_size_t rcv_size, mach_port_name_t rcv_name,
 		mach_msg_timeout_t timeout);
 mach_msg_return_t ipc_kernel_send(mach_msg_header_t *msg);
+
+void ipc_remote_deliver(uint64_t dest_global_id, const void *blob,
+		uint32_t length);
+mach_port_name_t ipc_service_check_in(const char *name);
+mach_port_name_t ipc_service_look_up(const char *name);
+void ipc_service_register(const char *name, mach_port_name_t port);
 
 kern_return_t ipc_port_allocate(
 		mach_port_right_t right, mach_port_name_t *name);

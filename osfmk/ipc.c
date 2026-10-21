@@ -41,6 +41,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "broker.h"
+#include "broker_client.h"
 #include "bsd/kevent.h"
 #include "ipc.h"
 
@@ -63,6 +65,8 @@ struct ipc_port {
 	struct ipc_kmsg **messages_tail;
 	mach_port_seqno_t seqno;
 	mach_port_context_t context;
+	uint64_t global_id;
+	bool remote;
 };
 
 struct ipc_entry {
@@ -71,6 +75,13 @@ struct ipc_entry {
 	mach_port_urefs_t urefs;
 	mach_port_urefs_t sorights;
 	uint32_t generation;
+};
+
+struct remote_header {
+	uint32_t message_size;
+	mach_msg_type_name_t dest_disposition;
+	mach_msg_type_name_t reply_disposition;
+	uint64_t reply_global_id;
 };
 
 struct task_subsystem;
@@ -92,6 +103,7 @@ extern const struct clock_subsystem clock_subsystem;
 extern const struct task_restartable_subsystem task_restartable_subsystem;
 extern const struct host_priv_subsystem host_priv_subsystem;
 extern const struct is_iokit_subsystem is_iokit_subsystem;
+extern const struct mig_subsystem x_bootstrap_subsystem;
 
 static const struct mig_subsystem *const kobject_subsystems[] = {
 		(const struct mig_subsystem *)&task_subsystem,
@@ -101,6 +113,7 @@ static const struct mig_subsystem *const kobject_subsystems[] = {
 		(const struct mig_subsystem *)&mach_host_subsystem,
 		(const struct mig_subsystem *)&clock_subsystem,
 		(const struct mig_subsystem *)&task_restartable_subsystem,
+		&x_bootstrap_subsystem,
 		(const struct mig_subsystem *)&host_priv_subsystem,
 		(const struct mig_subsystem *)&is_iokit_subsystem,
 };
@@ -109,7 +122,14 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t arrival = PTHREAD_COND_INITIALIZER;
 static struct ipc_entry *entries;
 static uint32_t entry_count;
-static struct ipc_port *kobjects[IPC_KOBJECT_SEMAPHORE + 1];
+static struct ipc_port *kobjects[IPC_KOBJECT_BOOTSTRAP + 1];
+static uint32_t export_counter;
+
+static mach_msg_return_t remote_send(mach_msg_header_t *header,
+		mach_msg_size_t size);
+static uint64_t export_local_port(mach_port_name_t name);
+static struct ipc_port *port_for_global_id(uint64_t global_id);
+static mach_port_name_t import_remote_send(uint64_t global_id);
 
 static mach_port_name_t kobject_send_right(ipc_kobject_type_t type);
 static struct ipc_port *kobject_port(ipc_kobject_type_t type);
@@ -156,6 +176,12 @@ mach_port_name_t
 ipc_host_self(void)
 {
 	return kobject_send_right(IPC_KOBJECT_HOST);
+}
+
+mach_port_name_t
+ipc_bootstrap_self(void)
+{
+	return kobject_send_right(IPC_KOBJECT_BOOTSTRAP);
 }
 
 mach_port_name_t
@@ -282,6 +308,13 @@ send(mach_msg_header_t *msg, mach_msg_size_t size, ipc_side_t sender)
 	kmsg->header->msgh_size = size;
 
 	pthread_mutex_lock(&lock);
+	struct ipc_entry *remote_entry = lookup(kmsg->header->msgh_remote_port);
+	if (remote_entry != NULL && remote_entry->port->remote) {
+		mach_msg_return_t rr = remote_send(kmsg->header, size);
+		free(kmsg);
+		return rr;
+	}
+
 	struct ipc_port *dest;
 	mach_msg_return_t mr = copyin(kmsg->header, sender, &dest);
 	if (mr != MACH_MSG_SUCCESS) {
@@ -309,6 +342,155 @@ send(mach_msg_header_t *msg, mach_msg_size_t size, ipc_side_t sender)
 
 	free(kmsg);
 	return MACH_MSG_SUCCESS;
+}
+
+static mach_msg_return_t
+remote_send(mach_msg_header_t *header, mach_msg_size_t size)
+{
+	uint64_t dest_global_id = lookup(header->msgh_remote_port)->port->global_id;
+	mach_msg_bits_t bits = header->msgh_bits;
+
+	struct remote_header rh = {
+		.message_size = size,
+		.dest_disposition = MACH_MSGH_BITS_REMOTE(bits),
+		.reply_disposition = MACH_MSGH_BITS_LOCAL(bits),
+		.reply_global_id = (header->msgh_local_port != MACH_PORT_NULL)
+				? export_local_port(header->msgh_local_port)
+				: 0,
+	};
+
+	uint32_t blob_length = sizeof(rh) + size;
+	char *blob = malloc(blob_length);
+	memcpy(blob, &rh, sizeof(rh));
+	memcpy(blob + sizeof(rh), header, size);
+
+	pthread_mutex_unlock(&lock);
+	broker_client_send(dest_global_id, blob, blob_length);
+	free(blob);
+	return MACH_MSG_SUCCESS;
+}
+
+static uint64_t
+export_local_port(mach_port_name_t name)
+{
+	struct ipc_port *port = lookup(name)->port;
+	if (port->global_id == 0) {
+		port->global_id = broker_global_id(
+				broker_client_guest_id(), ++export_counter);
+	}
+	return port->global_id;
+}
+
+static struct ipc_port *
+port_for_global_id(uint64_t global_id)
+{
+	for (uint32_t i = 1; i < entry_count; i++) {
+		struct ipc_port *port = entries[i].port;
+		if (port != NULL && !port->remote
+				&& port->global_id == global_id) {
+			return port;
+		}
+	}
+	return NULL;
+}
+
+static mach_port_name_t
+import_remote_send(uint64_t global_id)
+{
+	if (broker_guest_of(global_id) == broker_client_guest_id()) {
+		struct ipc_port *port = port_for_global_id(global_id);
+		struct ipc_entry *entry = &entries[MACH_PORT_INDEX(port->name)];
+		entry->type |= MACH_PORT_TYPE_SEND;
+		entry->urefs++;
+		return port->name;
+	}
+
+	for (uint32_t i = 1; i < entry_count; i++) {
+		struct ipc_port *port = entries[i].port;
+		if (port != NULL && port->remote
+				&& port->global_id == global_id) {
+			entries[i].urefs++;
+			return port->name;
+		}
+	}
+
+	struct ipc_entry *entry = entry_alloc(port_alloc(IPC_KOBJECT_NONE));
+	entry->type = MACH_PORT_TYPE_SEND;
+	entry->urefs = 1;
+	entry->port->remote = true;
+	entry->port->global_id = global_id;
+	return entry->port->name;
+}
+
+void
+ipc_remote_deliver(uint64_t dest_global_id, const void *blob, uint32_t length)
+{
+	const struct remote_header *rh = blob;
+	const mach_msg_header_t *message
+			= (const mach_msg_header_t *)((const char *)blob
+					+ sizeof(*rh));
+
+	pthread_mutex_lock(&lock);
+	struct ipc_port *dest = port_for_global_id(dest_global_id);
+
+	struct ipc_kmsg *kmsg = malloc(sizeof(*kmsg) + rh->message_size
+			+ sizeof(mach_msg_max_trailer_t));
+	memcpy(kmsg->header, message, rh->message_size);
+
+	mach_port_name_t reply_name = (rh->reply_global_id != 0)
+			? import_remote_send(rh->reply_global_id)
+			: MACH_PORT_NULL;
+	kmsg->header->msgh_bits = MACH_MSGH_BITS_SET(
+			received_type(rh->reply_disposition),
+			received_type(rh->dest_disposition), 0,
+			message->msgh_bits & MACH_MSGH_BITS_COMPLEX);
+	kmsg->header->msgh_remote_port = reply_name;
+	kmsg->header->msgh_local_port = dest->name;
+	kmsg->header->msgh_voucher_port = MACH_PORT_NULL;
+	kmsg->header->msgh_size = rh->message_size;
+
+	enqueue(dest, kmsg);
+	unlock_and_notify_arrival(dest);
+}
+
+mach_port_name_t
+ipc_service_check_in(const char *name)
+{
+	broker_client_ensure();
+	pthread_mutex_lock(&lock);
+	struct ipc_entry *entry = entry_alloc(port_alloc(IPC_KOBJECT_NONE));
+	entry->type = MACH_PORT_TYPE_RECEIVE;
+	entry->port->global_id = broker_global_id(
+			broker_client_guest_id(), ++export_counter);
+	mach_port_name_t name_out = entry->port->name;
+	uint64_t global_id = entry->port->global_id;
+	pthread_mutex_unlock(&lock);
+	broker_client_register(name, global_id);
+	return name_out;
+}
+
+mach_port_name_t
+ipc_service_look_up(const char *name)
+{
+	broker_client_ensure();
+	uint64_t global_id;
+	if (!broker_client_look_up(name, &global_id)) {
+		return MACH_PORT_NULL;
+	}
+	pthread_mutex_lock(&lock);
+	mach_port_name_t name_out = import_remote_send(global_id);
+	pthread_mutex_unlock(&lock);
+	return name_out;
+}
+
+void
+ipc_service_register(const char *name, mach_port_name_t port)
+{
+	broker_client_ensure();
+	pthread_mutex_lock(&lock);
+	uint64_t global_id = export_local_port(port);
+	pthread_mutex_unlock(&lock);
+	broker_client_register(name, global_id);
 }
 
 static mach_msg_return_t
@@ -483,6 +665,9 @@ transfer_right(mach_port_name_t name, mach_msg_type_name_t disposition,
 			case MACH_MSG_TYPE_PORT_SEND_ONCE:
 				entry->type |= MACH_PORT_TYPE_SEND_ONCE;
 				entry->sorights++;
+				break;
+			case MACH_MSG_TYPE_PORT_RECEIVE:
+				entry->type |= MACH_PORT_TYPE_RECEIVE;
 				break;
 			default:
 				unimplemented();

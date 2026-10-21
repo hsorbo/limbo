@@ -3,7 +3,7 @@ bootstrap_lib = static_library('bootstrap',
     'bootstrap.c',
     'bootstrapServer.c',
   ],
-  include_directories: include_dir,
+  include_directories: [include_dir, include_directories('..')],
   c_args: [
     '-Wno-packed-not-aligned',
     '-Wno-unused-parameter',
