@@ -80,6 +80,8 @@ struct thread_act_subsystem;
 struct mach_host_subsystem;
 struct clock_subsystem;
 struct task_restartable_subsystem;
+struct host_priv_subsystem;
+struct is_iokit_subsystem;
 
 extern const struct task_subsystem task_subsystem;
 extern const struct mach_vm_subsystem mach_vm_subsystem;
@@ -88,6 +90,8 @@ extern const struct thread_act_subsystem thread_act_subsystem;
 extern const struct mach_host_subsystem mach_host_subsystem;
 extern const struct clock_subsystem clock_subsystem;
 extern const struct task_restartable_subsystem task_restartable_subsystem;
+extern const struct host_priv_subsystem host_priv_subsystem;
+extern const struct is_iokit_subsystem is_iokit_subsystem;
 
 static const struct mig_subsystem *const kobject_subsystems[] = {
 		(const struct mig_subsystem *)&task_subsystem,
@@ -97,13 +101,15 @@ static const struct mig_subsystem *const kobject_subsystems[] = {
 		(const struct mig_subsystem *)&mach_host_subsystem,
 		(const struct mig_subsystem *)&clock_subsystem,
 		(const struct mig_subsystem *)&task_restartable_subsystem,
+		(const struct mig_subsystem *)&host_priv_subsystem,
+		(const struct mig_subsystem *)&is_iokit_subsystem,
 };
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t arrival = PTHREAD_COND_INITIALIZER;
 static struct ipc_entry *entries;
 static uint32_t entry_count;
-static struct ipc_port *kobjects[IPC_KOBJECT_CALENDAR_CLOCK + 1];
+static struct ipc_port *kobjects[IPC_KOBJECT_SEMAPHORE + 1];
 
 static mach_port_name_t kobject_send_right(ipc_kobject_type_t type);
 static struct ipc_port *kobject_port(ipc_kobject_type_t type);

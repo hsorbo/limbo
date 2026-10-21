@@ -145,7 +145,8 @@ host_get_io_main(host_t host, io_main_t *io_main)
 	fprintf(stderr, "host_get_io_main(%p, %p)\n", (void *)host,
 			(void *)io_main);
 #endif
-	return KERN_FAILURE;
+	*io_main = ipc_kobject_name(IPC_KOBJECT_IO_MAIN);
+	return KERN_SUCCESS;
 }
 
 kern_return_t
