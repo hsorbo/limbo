@@ -139,6 +139,12 @@ xpc_bootstrap_serve(mach_msg_header_t *request)
 static bool
 look_up(mach_msg_header_t *request, const char *name)
 {
+	if (strcmp(name, "com.apple.system.opendirectoryd.libinfo") == 0) {
+		reply_with_port(request, ipc_libinfo_self(),
+				MACH_MSG_TYPE_COPY_SEND, XPC_SERIAL_MACH_SEND,
+				true);
+		return true;
+	}
 	mach_port_name_t service = ipc_service_look_up(name);
 	if (service == MACH_PORT_NULL) {
 		reply_with_error(request);

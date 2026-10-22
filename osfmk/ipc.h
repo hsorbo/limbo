@@ -61,6 +61,7 @@ typedef enum {
 	IPC_KOBJECT_IO_OBJECT,
 	IPC_KOBJECT_SEMAPHORE,
 	IPC_KOBJECT_BOOTSTRAP,
+	IPC_KOBJECT_LIBINFO,
 } ipc_kobject_type_t;
 
 mach_port_name_t ipc_task_self(void);
@@ -86,6 +87,8 @@ void ipc_remote_deliver(uint64_t dest_global_id, const void *blob,
 		uint32_t length);
 mach_port_name_t ipc_service_check_in(const char *name);
 mach_port_name_t ipc_service_look_up(const char *name);
+mach_port_name_t ipc_libinfo_self(void);
+void ipc_port_adopt_kotype(mach_port_name_t name, ipc_kobject_type_t type);
 void ipc_service_register(const char *name, mach_port_name_t port);
 
 kern_return_t ipc_port_allocate(

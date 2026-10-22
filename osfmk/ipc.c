@@ -43,6 +43,7 @@
 
 #include "broker.h"
 #include "broker_client.h"
+#include "libinfo.h"
 #include "xpc_bootstrap.h"
 #include "bsd/kevent.h"
 #include "ipc.h"
@@ -126,7 +127,7 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t arrival = PTHREAD_COND_INITIALIZER;
 static struct ipc_entry *entries;
 static uint32_t entry_count;
-static struct ipc_port *kobjects[IPC_KOBJECT_BOOTSTRAP + 1];
+static struct ipc_port *kobjects[IPC_KOBJECT_LIBINFO + 1];
 static uint32_t export_counter;
 static uint32_t transfer_counter;
 
@@ -196,6 +197,23 @@ mach_port_name_t
 ipc_bootstrap_self(void)
 {
 	return kobject_send_right(IPC_KOBJECT_BOOTSTRAP);
+}
+
+mach_port_name_t
+ipc_libinfo_self(void)
+{
+	return kobject_send_right(IPC_KOBJECT_LIBINFO);
+}
+
+void
+ipc_port_adopt_kotype(mach_port_name_t name, ipc_kobject_type_t type)
+{
+	pthread_mutex_lock(&lock);
+	struct ipc_entry *entry = lookup(name);
+	if (entry != NULL) {
+		entry->port->kotype = type;
+	}
+	pthread_mutex_unlock(&lock);
 }
 
 mach_port_name_t
@@ -352,9 +370,12 @@ send(mach_msg_header_t *msg, mach_msg_size_t size, ipc_side_t sender,
 	write_trailer(kmsg->header, dest, kmsg->sender_pid);
 	bool serve_xpc = dest->kotype == IPC_KOBJECT_BOOTSTRAP
 			&& xpc_bootstrap_is_message(kmsg->header->msgh_id);
+	bool serve_libinfo = dest->kotype == IPC_KOBJECT_LIBINFO;
 	pthread_mutex_unlock(&lock);
 
-	if (!serve_xpc || !xpc_bootstrap_serve(kmsg->header)) {
+	if (serve_libinfo) {
+		libinfo_serve(kmsg->header);
+	} else if (!serve_xpc || !xpc_bootstrap_serve(kmsg->header)) {
 		serve_kobject(kmsg->header);
 	}
 
