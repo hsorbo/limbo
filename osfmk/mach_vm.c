@@ -26,14 +26,26 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <errno.h>
 #include <mach/mach_types.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
+#include "ipc.h"
 #include "mach_vm.h"
+
+struct memory_entry {
+	int fd;
+	mach_vm_size_t size;
+};
 
 #define VM_FLAGS_ANYWHERE  0x0001
 #define VM_FLAGS_OVERWRITE 0x4000
@@ -48,6 +60,10 @@ static kern_return_t remap_copy(mach_vm_address_t *target_address,
 		mach_vm_size_t size, mach_vm_offset_t mask, int flags,
 		mach_vm_address_t src_address, vm_prot_t *protection);
 static vm_prot_t region_protection(mach_vm_address_t address);
+static kern_return_t map_entry(mach_vm_address_t *address, mach_vm_size_t size,
+		mach_vm_offset_t mask, int flags,
+		const struct memory_entry *entry, memory_object_offset_t offset,
+		boolean_t copy, vm_prot_t protection);
 
 kern_return_t
 _kernelrpc_mach_vm_allocate(vm_task_entry_t target, mach_vm_address_t *address,
@@ -279,10 +295,42 @@ _kernelrpc_mach_vm_map(vm_task_entry_t target_task, mach_vm_address_t *address,
 			(void *)max_protection, (void *)inheritance);
 #endif
 	if (object != MACH_PORT_NULL) {
-		unimplemented();
+		struct memory_entry *entry = ipc_kobject_lookup(
+				object, IPC_KOBJECT_MEMORY_ENTRY);
+		if (entry == NULL) {
+			unimplemented();
+		}
+		return map_entry(address, size, mask, flags, entry, offset,
+				copy, cur_protection);
 	}
 
 	return map_anonymous(address, size, mask, flags, cur_protection);
+}
+
+static kern_return_t
+map_entry(mach_vm_address_t *address, mach_vm_size_t size,
+		mach_vm_offset_t mask, int flags,
+		const struct memory_entry *entry, memory_object_offset_t offset,
+		boolean_t copy, vm_prot_t protection)
+{
+	size = (size + PAGE_MASK) & ~PAGE_MASK;
+	if (offset + size > entry->size) {
+		return KERN_INVALID_ARGUMENT;
+	}
+
+	kern_return_t kr = map_anonymous(
+			address, size, mask, flags, VM_PROT_NONE);
+	if (kr != KERN_SUCCESS) {
+		return kr;
+	}
+	void *base = mmap((void *)*address, size, protection,
+			(copy ? MAP_PRIVATE : MAP_SHARED) | MAP_FIXED,
+			entry->fd, offset);
+	if (base == MAP_FAILED) {
+		munmap((void *)*address, size);
+		return KERN_NO_SPACE;
+	}
+	return KERN_SUCCESS;
 }
 
 kern_return_t

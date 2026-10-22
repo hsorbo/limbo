@@ -62,6 +62,7 @@ typedef enum {
 	IPC_KOBJECT_SEMAPHORE,
 	IPC_KOBJECT_BOOTSTRAP,
 	IPC_KOBJECT_LIBINFO,
+	IPC_KOBJECT_MEMORY_ENTRY,
 } ipc_kobject_type_t;
 
 mach_port_name_t ipc_task_self(void);
