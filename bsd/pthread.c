@@ -172,6 +172,10 @@ sys_bsdthread_register(user_addr_t threadstart, user_addr_t wqthread,
 			(void *)(uintptr_t)dispatch_queue_offset);
 #endif
 	struct pthread_registration_data *d = data;
+#ifndef __x86_64__
+	asm("xpaci %0" : "+r"(threadstart));
+	asm("xpaci %0" : "+r"(wqthread));
+#endif
 	registration.threadstart = (uint64_t)threadstart;
 	registration.wqthread = (uint64_t)wqthread;
 	registration.pthread_size = pthread_size;
