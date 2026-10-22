@@ -300,6 +300,7 @@ _kernelrpc_mach_vm_map(vm_task_entry_t target_task, mach_vm_address_t *address,
 			(void *)offset, (void *)copy, (void *)cur_protection,
 			(void *)max_protection, (void *)inheritance);
 #endif
+	cur_protection &= VM_PROT_ALL;
 	if (object != MACH_PORT_NULL) {
 		struct memory_entry *entry = ipc_kobject_lookup(
 				object, IPC_KOBJECT_MEMORY_ENTRY);
