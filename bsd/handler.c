@@ -643,6 +643,7 @@ signal_mask(int how, const uint32_t *set, uint32_t *oset)
 		}
 		sigset_to_linux(*set, &linux_set);
 		sigdelset(&linux_set, SIGSYS);
+		sigdelset(&linux_set, SIGILL);
 		new_set = &linux_set;
 	}
 
