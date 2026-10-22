@@ -3844,7 +3844,7 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 	case 0x25:
 		return sys_kill(arg1, arg2, arg3);
 	case 0x26:
-		return sys_nosys();
+		return _ENOSYS;
 	case 0x27:
 		return sys_getppid();
 	case 0x28:
