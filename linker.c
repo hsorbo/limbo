@@ -43,6 +43,12 @@
 #define MAP_32BIT 0
 #endif
 
+#ifdef __x86_64__
+#define LIMBO_CPU_TYPE CPU_TYPE_X86_64
+#else
+#define LIMBO_CPU_TYPE CPU_TYPE_ARM64
+#endif
+
 static struct mach_header_64 *header_compatible(struct fat_header *fat);
 static void zero_bss(struct segment_command_64 *cmd, uintptr_t base_address);
 
@@ -65,7 +71,7 @@ linker_link(const char *path, const char **dylinker_path, uintptr_t *entry)
 	struct mach_header_64 *header;
 	if (fat->magic == MH_MAGIC_64) {
 		header = (struct mach_header_64 *)base;
-		if (header->cputype != CPU_TYPE_X86_64) {
+		if (header->cputype != LIMBO_CPU_TYPE) {
 			goto error;
 		}
 	} else {
@@ -277,7 +283,7 @@ header_compatible(struct fat_header *fat)
 	for (uint32_t i = 0; i < nfat_arch; i++) {
 		uint32_t cputype = ntohl(fat_archs[i].cputype);
 		uint32_t offset = ntohl(fat_archs[i].offset);
-		if (cputype == CPU_TYPE_X86_64) {
+		if (cputype == LIMBO_CPU_TYPE) {
 			header = (struct mach_header_64 *)((char *)fat
 					+ offset);
 			break;

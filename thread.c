@@ -156,6 +156,10 @@ thread_enter(const struct thread_state *state)
 		asm volatile("msr tpidrro_el0, %0" ::"r"(state->tpidr));
 	}
 
+	/* Pin the base to x16: the general-register loads below overwrite
+	 * x0-x7, so the state pointer must live in a register they leave
+	 * untouched */
+	register const struct thread_state *base asm("x16") = state;
 	asm volatile("ldp x0, x1, [%0, #16]\n"
 		     "ldp x2, x3, [%0, #32]\n"
 		     "ldp x4, x5, [%0, #48]\n"
@@ -163,7 +167,7 @@ thread_enter(const struct thread_state *state)
 		     "ldr x9, [%0, #8]\n"
 		     "ldr x10, [%0]\n"
 		     "mov sp, x9\n"
-		     "br x10\n" ::"r"(state)
+		     "br x10\n" ::"r"(base)
 		     : "memory");
 	__builtin_unreachable();
 }

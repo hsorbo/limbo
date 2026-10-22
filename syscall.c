@@ -67,6 +67,25 @@ static __thread bool x1_pending;
 static __thread uint64_t x1_value;
 #endif
 
+#ifndef __x86_64__
+/*
+ * The signal return path runs a trampoline that issues rt_sigreturn. Linux
+ * (and qemu-user) place their trampoline outside our binary, so its system
+ * call would itself trap under syscall-user-dispatch and recurse. Supply our
+ * own restorer inside the allowed region so the sigreturn is let through.
+ */
+#ifndef SA_RESTORER
+#define SA_RESTORER 0x04000000
+#endif
+void limbo_rt_sigreturn(void);
+asm(".text\n"
+    ".globl limbo_rt_sigreturn\n"
+    ".type limbo_rt_sigreturn, %function\n"
+    "limbo_rt_sigreturn:\n"
+    "	mov x8, #139\n" /* __NR_rt_sigreturn */
+    "	svc #0\n");
+#endif
+
 int
 syscall_handler_install(void)
 {
@@ -75,6 +94,10 @@ syscall_handler_install(void)
 	sigemptyset(&act.sa_mask);
 	act.sa_sigaction = handle_syscall;
 	act.sa_flags = SA_SIGINFO | SA_NODEFER;
+#ifndef __x86_64__
+	act.sa_flags |= SA_RESTORER;
+	act.sa_restorer = limbo_rt_sigreturn;
+#endif
 
 	if (sigaction(SIGSYS, &act, NULL) == -1) {
 		perror("sigaction");
@@ -179,15 +202,19 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 	uint64_t arg6 = regs[5];
 	uint64_t *sp = (uint64_t *)mc->sp;
 
-	unsigned long syscall = regs[16];
-	if (syscall >= SYSCALL_CLASS_MACH && syscall < SYSCALL_CLASS_UNIX) {
-		regs[0] = sys_osfmk(syscall - SYSCALL_CLASS_MACH, arg1, arg2,
+	/*
+	 * Darwin arm64 does not class-shift the number like x86-64: a Mach
+	 * trap is the negated trap number in x16, a Unix/BSD call is the bare
+	 * positive number. TODO: machine-dependent calls.
+	 */
+	int64_t number = (int64_t)regs[16];
+	if (number < 0) {
+		regs[0] = sys_osfmk((unsigned long)-number, arg1, arg2, arg3,
+				arg4, arg5, arg6, sp);
+	} else {
+		int64_t result = sys_bsd((unsigned long)number, arg1, arg2,
 				arg3, arg4, arg5, arg6, sp);
-	} else if (syscall >= SYSCALL_CLASS_UNIX
-			&& syscall < SYSCALL_CLASS_MDEP) {
-		int64_t result = sys_bsd(syscall - SYSCALL_CLASS_UNIX, arg1,
-				arg2, arg3, arg4, arg5, arg6, sp);
-		if (returns_raw_result(syscall - SYSCALL_CLASS_UNIX, arg1)) {
+		if (returns_raw_result((unsigned long)number, arg1)) {
 			mc->pstate &= ~PSTATE_C;
 			regs[0] = result;
 		} else {
@@ -197,15 +224,6 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 			regs[1] = x1_value;
 			x1_pending = false;
 		}
-	} else if (syscall >= SYSCALL_CLASS_MDEP
-			&& syscall < SYSCALL_CLASS_DIAG) {
-		regs[0] = sys_mdep(syscall - SYSCALL_CLASS_MDEP, arg1, arg2,
-				arg3, arg4, arg5, arg6, sp);
-	} else {
-#ifdef ENABLE_STRACE
-		fprintf(stderr, ">> Missing system call: %#lx", syscall);
-#endif
-		abort();
 	}
 }
 #endif
