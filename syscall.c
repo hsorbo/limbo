@@ -34,6 +34,12 @@
 #include <asm/processor-flags.h>
 #endif
 #include <elf.h>
+#include <errno.h>
+#ifndef __x86_64__
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <stddef.h>
+#endif
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -56,6 +62,11 @@ static const uint8_t selector = SYSCALL_DISPATCH_FILTER_BLOCK;
 
 static void handle_syscall(int sig, siginfo_t *info, void *ucontext);
 static bool returns_raw_result(unsigned long syscall, uint64_t arg1);
+#ifndef __x86_64__
+static int filter_install(const Elf64_Phdr *phdrs, unsigned long e_phnum);
+
+static bool filter_installed;
+#endif
 
 #ifdef __x86_64__
 static void set_bsd_result(greg_t *regs, int64_t result);
@@ -398,6 +409,12 @@ syscall_set_rdx(uint64_t value)
 int
 syscall_dispatch_enable(void)
 {
+#ifndef __x86_64__
+	if (filter_installed) {
+		return 0;
+	}
+#endif
+
 	/* Enumerate the program headers of the executable to determine the
 	 * region for which we should NOT trap all system calls */
 	Elf64_Phdr *phdrs = (Elf64_Phdr *)getauxval(AT_PHDR);
@@ -409,6 +426,11 @@ syscall_dispatch_enable(void)
 			if (prctl(PR_SET_SYSCALL_USER_DISPATCH,
 					    PR_SYS_DISPATCH_ON, phdr.p_vaddr,
 					    phdr.p_memsz, &selector)) {
+#ifndef __x86_64__
+				if (errno == EINVAL) {
+					return filter_install(phdrs, e_phnum);
+				}
+#endif
 				perror("prctl");
 				return 1;
 			}
@@ -416,3 +438,54 @@ syscall_dispatch_enable(void)
 	}
 	return 0;
 }
+
+#ifndef __x86_64__
+#define IP_LOW  offsetof(struct seccomp_data, instruction_pointer)
+#define IP_HIGH (IP_LOW + sizeof(uint32_t))
+
+static int
+filter_install(const Elf64_Phdr *phdrs, unsigned long e_phnum)
+{
+	struct sock_filter program[6 * e_phnum + 1];
+	unsigned short length = 0;
+
+	for (uint32_t i = 0; i < e_phnum; i++) {
+		const Elf64_Phdr *phdr = &phdrs[i];
+		if (phdr->p_type != PT_LOAD || !(phdr->p_flags & PF_X)) {
+			continue;
+		}
+
+		uint64_t start = phdr->p_vaddr;
+		uint64_t end = phdr->p_vaddr + phdr->p_memsz;
+		if (start >> 32 != end >> 32) {
+			fprintf(stderr, "limbo: segment spans 4 GiB\n");
+			return 1;
+		}
+
+		struct sock_filter range[] = {
+				BPF_STMT(BPF_LD | BPF_W | BPF_ABS, IP_HIGH),
+				BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+						(uint32_t)(start >> 32), 0, 4),
+				BPF_STMT(BPF_LD | BPF_W | BPF_ABS, IP_LOW),
+				BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K,
+						(uint32_t)start, 0, 2),
+				BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K,
+						(uint32_t)end, 1, 0),
+				BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+		};
+		memcpy(&program[length], range, sizeof(range));
+		length += sizeof(range) / sizeof(range[0]);
+	}
+	program[length++] = (struct sock_filter)BPF_STMT(
+			BPF_RET | BPF_K, SECCOMP_RET_TRAP);
+
+	struct sock_fprog fprog = {.len = length, .filter = program};
+	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+			|| prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &fprog)) {
+		perror("seccomp");
+		return 1;
+	}
+	filter_installed = true;
+	return 0;
+}
+#endif
