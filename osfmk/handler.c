@@ -714,7 +714,11 @@ sys_task_name_for_pid(
 	fprintf(stderr, "task_name_for_pid(%p, %p, %p)\n", (void *)target_tport,
 			(void *)pid, (void *)tn);
 #endif
-	unimplemented();
+	if (pid != getpid()) {
+		return KERN_FAILURE;
+	}
+	*tn = ipc_task_self();
+	return KERN_SUCCESS;
 }
 
 kern_return_t
