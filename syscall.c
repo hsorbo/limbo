@@ -220,11 +220,14 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 	uint64_t entry_pointer;
 	asm volatile("mrs %0, tpidr_el0" : "=r"(entry_pointer));
 	asm volatile("msr tpidr_el0, %0" ::"r"(host_thread_pointer));
+	uint64_t outer_pointer = guest_thread_pointer;
 	guest_thread_pointer = entry_pointer;
 
 	dispatch_syscall(&((ucontext_t *)ucontext)->uc_mcontext);
 
-	asm volatile("msr tpidr_el0, %0" ::"r"(guest_thread_pointer));
+	uint64_t resume_pointer = guest_thread_pointer;
+	guest_thread_pointer = outer_pointer;
+	asm volatile("msr tpidr_el0, %0" ::"r"(resume_pointer));
 }
 
 void
