@@ -265,7 +265,7 @@ host_request_notification(
 	fprintf(stderr, "host_request_notification(%p, %p, %p)\n", (void *)host,
 			(void *)notify_type, (void *)notify_port);
 #endif
-	unimplemented();
+	return KERN_SUCCESS;
 }
 
 kern_return_t

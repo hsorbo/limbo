@@ -65,6 +65,7 @@
 #include "fs/at.h"
 #include "handler.h"
 #include "kevent.h"
+#include "osfmk/broker_client.h"
 #include "osfmk/semaphore.h"
 #include "shared_cache.h"
 #include "signo.h"
@@ -75,6 +76,8 @@
 
 #define KAUTH_UID_NONE (~(uid_t)0 - 100)
 #define KAUTH_GID_NONE (~(gid_t)0 - 100)
+
+#define PT_DENY_ATTACH 31
 
 int
 sys_nosys(void)
@@ -115,6 +118,7 @@ sys_fork(void)
 	}
 	if (pid == 0) {
 		syscall_dispatch_enable();
+		broker_client_reset();
 	}
 	syscall_set_rdx(pid == 0);
 	return (pid == 0) ? parent : pid;
@@ -413,6 +417,9 @@ sys_ptrace(int req, uint64_t pid, void *addr, int data)
 	fprintf(stderr, "ptrace(%p, %p, %p, %p)\n", (void *)req, (void *)pid,
 			(void *)addr, (void *)data);
 #endif
+	if (req == PT_DENY_ATTACH) {
+		return 0;
+	}
 	unimplemented();
 }
 
@@ -1046,12 +1053,15 @@ sys_listen(int s, int backlog)
 }
 
 int
-sys_sigsuspend(void *mask)
+sys_sigsuspend(uint32_t mask)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "sigsuspend(%p)\n", (void *)mask);
+	fprintf(stderr, "sigsuspend(%p)\n", (void *)(uintptr_t)mask);
 #endif
-	unimplemented();
+	sigset_t set;
+	sigset_to_linux(mask, &set);
+	sigdelset(&set, SIGSYS);
+	return errno_map(sigsuspend(&set));
 }
 
 struct __darwin_user64_timeval {
@@ -2045,8 +2055,7 @@ sys_shm_open(const char *name, int oflag, int mode)
 	fprintf(stderr, "shm_open(\"%s\", %p, %p)\n", name, (void *)oflag,
 			(void *)mode);
 #endif
-	/* TODO: Convert the flags */
-	return shm_open(name, oflag, mode);
+	return errno_map(shm_open(name, open_flags(oflag), mode));
 }
 
 int
@@ -3987,7 +3996,7 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		return sys_nosys();
 	case 0x6f:
 	case 0x19a: /* $nocancel */
-		return sys_sigsuspend((void *)arg1);
+		return sys_sigsuspend(arg1);
 	case 0x70:
 		return sys_nosys();
 	case 0x71:

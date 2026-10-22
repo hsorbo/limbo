@@ -73,6 +73,20 @@ broker_client_ensure(void)
 	pthread_mutex_unlock(&call_lock);
 }
 
+void
+broker_client_reset(void)
+{
+	if (broker_fd != -1) {
+		close(broker_fd);
+		broker_fd = -1;
+	}
+	guest_id = 0;
+	reply_pending = false;
+	pthread_mutex_init(&call_lock, NULL);
+	pthread_mutex_init(&reply_lock, NULL);
+	pthread_cond_init(&reply_ready, NULL);
+}
+
 bool
 broker_client_available(void)
 {

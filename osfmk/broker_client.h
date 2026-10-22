@@ -33,6 +33,7 @@
 #include <stdint.h>
 
 void broker_client_ensure(void);
+void broker_client_reset(void);
 bool broker_client_available(void);
 uint32_t broker_client_guest_id(void);
 void broker_client_register(const char *name, uint64_t global_id);

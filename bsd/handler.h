@@ -121,7 +121,7 @@ int sys_getpriority(int which, void *who);
 int sys_bind(int s, void *name, void *namelen);
 int sys_setsockopt(int s, int level, int name, void *val, void *valsize);
 int sys_listen(int s, int backlog);
-int sys_sigsuspend(void *mask);
+int sys_sigsuspend(uint32_t mask);
 int sys_gettimeofday(void *tp, void *tzp, uint64_t *mach_absolute_time);
 int sys_getrusage(int who, void *rusage);
 int sys_getsockopt(int s, int level, int name, void *val, void *avalsize);

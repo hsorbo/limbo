@@ -1014,7 +1014,9 @@ machport_receive(struct kevent_qos_s *event, uint8_t **data, size_t *data_size)
 {
 	uint32_t options = event->fflags;
 	if (!(options & MACH_RCV_MSG)) {
-		unimplemented();
+		event->fflags = 0;
+		event->data = event->ident;
+		return true;
 	}
 
 	bool use_data = event->ext[1] == 0;
