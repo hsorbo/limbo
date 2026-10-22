@@ -642,6 +642,7 @@ sign_pointer(uint64_t value, void *location, bool address_div,
 #define MRS_TPIDRRO_EL0 0xd53bd060
 #define MRS_TPIDR_EL0   0xd53bd040
 #define MRS_REGISTER    0x0000001f
+#define MOVZ_IMM0       0xd2800000
 
 static void
 patch_thread_self_reads(uint64_t address, uint64_t size)
@@ -650,6 +651,8 @@ patch_thread_self_reads(uint64_t address, uint64_t size)
 	for (uint64_t i = 0; i < size / sizeof(uint32_t); i++) {
 		if ((code[i] & ~MRS_REGISTER) == MRS_TPIDRRO_EL0) {
 			code[i] = MRS_TPIDR_EL0 | (code[i] & MRS_REGISTER);
+		} else if ((code[i] & ~MRS_REGISTER) == MRS_TPIDR_EL0) {
+			code[i] = MOVZ_IMM0 | (code[i] & MRS_REGISTER);
 		}
 	}
 }
