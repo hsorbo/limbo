@@ -181,19 +181,21 @@ build_stack(uint8_t *exe_base, const char *path, int argc, char *argv[],
 		return 0;
 	}
 
-	uint64_t entropy[4];
+	uint64_t entropy[8];
 	if (getrandom(entropy, sizeof(entropy), 0) != sizeof(entropy)) {
 		perror("getrandom");
 		return 0;
 	}
 
-	char *apple[4];
+	char *apple[5];
 	uint32_t applec = sizeof(apple) / sizeof(apple[0]);
 	asprintf(&apple[0], "executable_path=%s", sysroot_guest_path(path));
 	asprintf(&apple[1], "stack_guard=0x%lx", entropy[0]);
 	asprintf(&apple[2], "malloc_entropy=0x%lx,0x%lx", entropy[1],
 			entropy[2]);
 	asprintf(&apple[3], "ptr_munge=0x%lx", entropy[3]);
+	asprintf(&apple[4], "executable_boothash=%016lX%016lX%016lX%016lX",
+			entropy[4], entropy[5], entropy[6], entropy[7]);
 
 	uint32_t envc;
 	for (envc = 0; envp[envc] != NULL; envc++)
