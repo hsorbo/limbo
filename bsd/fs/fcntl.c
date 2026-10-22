@@ -176,6 +176,7 @@ sys_sys_fcntl(int fd, int cmd, long arg)
 		return errno_map(fcntl(
 				fd, F_SETFL, status_flags_from_darwin(arg)));
 	case _F_FULLFSYNC:
+	case _F_BARRIERFSYNC:
 		return errno_map(fsync(fd));
 	case _F_GETLK:
 		return record_lock(fd, F_GETLK, (void *)arg);
