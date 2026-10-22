@@ -111,7 +111,7 @@ sys___mac_syscall(char *policy, int call, user_addr_t arg)
 	} else if (strncmp(policy, "Quarantine", MAC_MAX_POLICY_NAME) == 0) {
 		return quarantine_handle_syscall(call);
 	} else if (strncmp(policy, "Sandbox", MAC_MAX_POLICY_NAME) == 0) {
-		return 1;
+		return 0;
 	} else {
 		unimplemented();
 	}
