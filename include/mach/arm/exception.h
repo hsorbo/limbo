@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2000 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
@@ -25,55 +25,111 @@
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
+/*
+ * @OSF_COPYRIGHT@
+ */
+/*
+ * Mach Operating System
+ * Copyright (c) 1991,1990,1989,1988 Carnegie Mellon University
+ * All Rights Reserved.
+ *
+ * Permission to use, copy, modify and distribute this software and its
+ * documentation is hereby granted, provided that both the copyright
+ * notice and this permission notice appear in all copies of the
+ * software, derivative works or modified versions, and any portions
+ * thereof, and that both notices appear in supporting documentation.
+ *
+ * CARNEGIE MELLON ALLOWS FREE USE OF THIS SOFTWARE IN ITS "AS IS"
+ * CONDITION.  CARNEGIE MELLON DISCLAIMS ANY LIABILITY OF ANY KIND FOR
+ * ANY DAMAGES WHATSOEVER RESULTING FROM THE USE OF THIS SOFTWARE.
+ *
+ * Carnegie Mellon requests users of this software to return to
+ *
+ *  Software Distribution Coordinator  or  Software.Distribution@CS.CMU.EDU
+ *  School of Computer Science
+ *  Carnegie Mellon University
+ *  Pittsburgh PA 15213-3890
+ *
+ * any improvements or extensions that they make and grant Carnegie Mellon
+ * the rights to redistribute these changes.
+ */
+/*
+ */
 
 #ifndef _MACH_ARM_EXCEPTION_H_
 #define _MACH_ARM_EXCEPTION_H_
 
-#define EXC_TYPES_COUNT         14      /* incl. illegal exception 0 */
+/*
+ * No machine dependent types for the 80386
+ */
 
-#define EXC_MASK_MACHINE         0
-
-#define EXCEPTION_CODE_MAX       2      /*  code and subcode */
-
+#define EXC_TYPES_COUNT 14      /* incl. illegal exception 0 */
 
 /*
- *	Trap numbers as defined by the hardware exception vectors.
+ *	Codes and subcodes for 80386 exceptions.
+ */
+
+#define EXCEPTION_CODE_MAX      2       /* currently code and subcode */
+
+/*
+ *	EXC_BAD_INSTRUCTION
+ */
+
+#define EXC_ARM_INVOP                  1
+
+/*
+ *	EXC_ARITHMETIC
+ */
+
+#define EXC_ARM_DIV                    1
+#define EXC_ARM_INTO                   2
+#define EXC_ARM_NOEXT                  3
+#define EXC_ARM_EXTOVR                 4
+#define EXC_ARM_EXTERR                 5
+#define EXC_ARM_EMERR                  6
+#define EXC_ARM_BOUND                  7
+#define EXC_ARM_SSEEXTERR              8
+
+/*
+ *	EXC_SOFTWARE
+ *	Note: 0x10000-0x10003 in use for unix signal
  */
 
 /*
- *      EXC_BAD_INSTRUCTION
+ *	EXC_BAD_ACCESS
  */
-
-#define EXC_ARM_UNDEFINED       1       /* Undefined */
-
-/*
- *      EXC_ARITHMETIC
- */
-
-#define EXC_ARM_FP_UNDEFINED    0       /* Undefined Floating Point Exception */
-#define EXC_ARM_FP_IO           1       /* Invalid Floating Point Operation */
-#define EXC_ARM_FP_DZ           2       /* Floating Point Divide by Zero */
-#define EXC_ARM_FP_OF           3       /* Floating Point Overflow */
-#define EXC_ARM_FP_UF           4       /* Floating Point Underflow */
-#define EXC_ARM_FP_IX           5       /* Inexact Floating Point Result */
-#define EXC_ARM_FP_ID           6       /* Floating Point Denormal Input */
-
-/*
- *      EXC_BAD_ACCESS
- *      Note: do not conflict with kern_return_t values returned by vm_fault
- */
-
-#define EXC_ARM_DA_ALIGN        0x101   /* Alignment Fault */
-#define EXC_ARM_DA_DEBUG        0x102   /* Debug (watch/break) Fault */
-#define EXC_ARM_SP_ALIGN        0x103   /* SP Alignment Fault */
-#define EXC_ARM_SWP             0x104   /* SWP instruction */
-#define EXC_ARM_PAC_FAIL        0x105   /* PAC authentication failure */
 
 /*
  *	EXC_BREAKPOINT
  */
 
-#define EXC_ARM_BREAKPOINT      1       /* breakpoint trap */
+#define EXC_ARM_SGL                    1
+#define EXC_ARM_BPT                    2
 
+#define EXC_ARM_DIVERR         0       /* divide by 0 eprror		*/
+#define EXC_ARM_SGLSTP         1       /* single step			*/
+#define EXC_ARM_NMIFLT         2       /* NMI				*/
+#define EXC_ARM_BPTFLT         3       /* breakpoint fault		*/
+#define EXC_ARM_INTOFLT        4       /* INTO overflow fault		*/
+#define EXC_ARM_BOUNDFLT       5       /* BOUND instruction fault	*/
+#define EXC_ARM_INVOPFLT       6       /* invalid opcode fault		*/
+#define EXC_ARM_NOEXTFLT       7       /* extension not available fault*/
+#define EXC_ARM_DBLFLT         8       /* double fault			*/
+#define EXC_ARM_EXTOVRFLT      9       /* extension overrun fault	*/
+#define EXC_ARM_INVTSSFLT      10      /* invalid TSS fault		*/
+#define EXC_ARM_SEGNPFLT       11      /* segment not present fault	*/
+#define EXC_ARM_STKFLT         12      /* stack fault			*/
+#define EXC_ARM_GPFLT          13      /* general protection fault	*/
+#define EXC_ARM_PGFLT          14      /* page fault			*/
+#define EXC_ARM_EXTERRFLT      16      /* extension error fault	*/
+#define EXC_ARM_ALIGNFLT       17      /* Alignment fault */
+#define EXC_ARM_ENDPERR        33      /* emulated extension error flt	*/
+#define EXC_ARM_ENOEXTFLT      32      /* emulated ext not present	*/
+
+
+/*
+ *	machine dependent exception masks
+ */
+#define EXC_MASK_MACHINE        0
 
 #endif  /* _MACH_ARM_EXCEPTION_H_ */

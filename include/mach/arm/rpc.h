@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000-2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2002,2000 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
@@ -32,4 +32,4 @@
 #ifndef _MACH_ARM_RPC_H_
 #define _MACH_ARM_RPC_H_
 
-#endif /* _MACH_ARM_RPC_H_ */
+#endif  /* _MACH_ARM_RPC_H_ */
