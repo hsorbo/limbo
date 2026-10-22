@@ -30,7 +30,9 @@
 #define _GNU_SOURCE
 #endif
 
+#ifdef __x86_64__
 #include <asm/prctl.h>
+#endif
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,7 +44,9 @@
 #include "syscall.h"
 #include "thread.h"
 
+#ifdef __x86_64__
 int arch_prctl(int, unsigned long);
+#endif
 
 static __thread struct thread *current;
 
@@ -126,6 +130,7 @@ thread_destroy(struct thread *thread)
 	free(thread);
 }
 
+#ifdef __x86_64__
 void
 thread_enter(const struct thread_state *state)
 {
@@ -143,6 +148,26 @@ thread_enter(const struct thread_state *state)
 		     "jmpq *(%%rax)\n" ::"a"(state));
 	__builtin_unreachable();
 }
+#else
+void
+thread_enter(const struct thread_state *state)
+{
+	if (state->tpidr != 0) {
+		asm volatile("msr tpidrro_el0, %0" ::"r"(state->tpidr));
+	}
+
+	asm volatile("ldp x0, x1, [%0, #16]\n"
+		     "ldp x2, x3, [%0, #32]\n"
+		     "ldp x4, x5, [%0, #48]\n"
+		     "ldp x6, x7, [%0, #64]\n"
+		     "ldr x9, [%0, #8]\n"
+		     "ldr x10, [%0]\n"
+		     "mov sp, x9\n"
+		     "br x10\n" ::"r"(state)
+		     : "memory");
+	__builtin_unreachable();
+}
+#endif
 
 void
 thread_block(void)

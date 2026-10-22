@@ -30,7 +30,9 @@
 #define _GNU_SOURCE
 #endif
 
+#ifdef __x86_64__
 #include <asm/processor-flags.h>
+#endif
 #include <elf.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -52,10 +54,18 @@ static const uint8_t selector = SYSCALL_DISPATCH_FILTER_BLOCK;
 
 static void handle_syscall(int sig, siginfo_t *info, void *ucontext);
 static bool returns_raw_result(unsigned long syscall, uint64_t arg1);
+
+#ifdef __x86_64__
 static void set_bsd_result(greg_t *regs, int64_t result);
 
 static __thread bool rdx_pending;
 static __thread uint64_t rdx_value;
+#else
+#define PSTATE_C (1u << 29)
+static void set_bsd_result(mcontext_t *mc, int64_t result);
+static __thread bool x1_pending;
+static __thread uint64_t x1_value;
+#endif
 
 int
 syscall_handler_install(void)
@@ -95,6 +105,7 @@ syscall_handler_install(void)
 #define BSD_SYS_ulock_wake  516
 #define BSD_SYS_ulock_wait2 544
 
+#ifdef __x86_64__
 static void
 handle_syscall(int sig, siginfo_t *info, void *ucontext)
 {
@@ -147,6 +158,57 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 		abort();
 	}
 }
+#else /* __arm64__ */
+static void
+handle_syscall(int sig, siginfo_t *info, void *ucontext)
+{
+	ucontext_t *context = (ucontext_t *)ucontext;
+	mcontext_t *mc = &context->uc_mcontext;
+	unsigned long long *regs = mc->regs;
+
+	/*
+	 * Darwin arm64 passes arguments in x0-x5 and the class-encoded system
+	 * call number in x16; the result returns in x0, with the carry flag
+	 * signalling a BSD error. TODO: verify the x16 encoding for Mach traps.
+	 */
+	uint64_t arg1 = regs[0];
+	uint64_t arg2 = regs[1];
+	uint64_t arg3 = regs[2];
+	uint64_t arg4 = regs[3];
+	uint64_t arg5 = regs[4];
+	uint64_t arg6 = regs[5];
+	uint64_t *sp = (uint64_t *)mc->sp;
+
+	unsigned long syscall = regs[16];
+	if (syscall >= SYSCALL_CLASS_MACH && syscall < SYSCALL_CLASS_UNIX) {
+		regs[0] = sys_osfmk(syscall - SYSCALL_CLASS_MACH, arg1, arg2,
+				arg3, arg4, arg5, arg6, sp);
+	} else if (syscall >= SYSCALL_CLASS_UNIX
+			&& syscall < SYSCALL_CLASS_MDEP) {
+		int64_t result = sys_bsd(syscall - SYSCALL_CLASS_UNIX, arg1,
+				arg2, arg3, arg4, arg5, arg6, sp);
+		if (returns_raw_result(syscall - SYSCALL_CLASS_UNIX, arg1)) {
+			mc->pstate &= ~PSTATE_C;
+			regs[0] = result;
+		} else {
+			set_bsd_result(mc, result);
+		}
+		if (x1_pending) {
+			regs[1] = x1_value;
+			x1_pending = false;
+		}
+	} else if (syscall >= SYSCALL_CLASS_MDEP
+			&& syscall < SYSCALL_CLASS_DIAG) {
+		regs[0] = sys_mdep(syscall - SYSCALL_CLASS_MDEP, arg1, arg2,
+				arg3, arg4, arg5, arg6, sp);
+	} else {
+#ifdef ENABLE_STRACE
+		fprintf(stderr, ">> Missing system call: %#lx", syscall);
+#endif
+		abort();
+	}
+}
+#endif
 
 static bool
 returns_raw_result(unsigned long syscall, uint64_t arg1)
@@ -161,6 +223,7 @@ returns_raw_result(unsigned long syscall, uint64_t arg1)
 	}
 }
 
+#ifdef __x86_64__
 static void
 set_bsd_result(greg_t *regs, int64_t result)
 {
@@ -179,6 +242,26 @@ syscall_set_rdx(uint64_t value)
 	rdx_value = value;
 	rdx_pending = true;
 }
+#else
+static void
+set_bsd_result(mcontext_t *mc, int64_t result)
+{
+	if (result < 0 && result >= _ELAST) {
+		mc->pstate |= PSTATE_C;
+		mc->regs[0] = -result;
+	} else {
+		mc->pstate &= ~PSTATE_C;
+		mc->regs[0] = result;
+	}
+}
+
+void
+syscall_set_rdx(uint64_t value)
+{
+	x1_value = value;
+	x1_pending = true;
+}
+#endif
 
 int
 syscall_dispatch_enable(void)

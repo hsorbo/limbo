@@ -140,11 +140,19 @@ run(int argc, char *argv[], char *envp[])
 
 	/* Set up the temporary zero-ed TLS storage for dyld */
 	memset(dyld_ls, 0, sizeof(dyld_ls));
+#ifdef __x86_64__
 	struct thread_state state = {
 			.rip = entry,
 			.rsp = stack_base,
 			.gs_base = (uint64_t)dyld_ls,
 	};
+#else
+	struct thread_state state = {
+			.pc = entry,
+			.sp = stack_base,
+			.tpidr = (uint64_t)dyld_ls,
+	};
+#endif
 	thread_enter(&state);
 error:
 	exit(1);

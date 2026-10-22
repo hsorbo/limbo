@@ -273,12 +273,16 @@ static void
 prepared_cache_directory(const dyld_cache_header_t *header, char *buffer)
 {
 	const uint8_t *u = header->uuid;
+#ifdef __x86_64__
+	const char *suffix = __builtin_cpu_supports("rdpid") ? "" : "-nosidt";
+#else
+	const char *suffix = "";
+#endif
 	snprintf(buffer, PREPARED_DIRECTORY_SIZE,
 			PREPARED_ROOT "/%02X%02X%02X%02X-%02X%02X-%02X%02X-"
 				      "%02X%02X-%02X%02X%02X%02X%02X%02X%s",
 			u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8],
-			u[9], u[10], u[11], u[12], u[13], u[14], u[15],
-			__builtin_cpu_supports("rdpid") ? "" : "-nosidt");
+			u[9], u[10], u[11], u[12], u[13], u[14], u[15], suffix);
 }
 
 static int
@@ -686,9 +690,11 @@ patch_text(int f, const dyld_cache_mapping_and_slide_info_t *text,
 	sidt_patches_init(patches,
 			(text->address + text->size + PAGE_SIZE - 1)
 					& ~(uint64_t)(PAGE_SIZE - 1));
+#ifdef __x86_64__
 	if (__builtin_cpu_supports("rdpid")) {
 		find_patches(patches, text, main_header);
 	}
+#endif
 	return write_patches(f, patches, text);
 }
 

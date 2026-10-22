@@ -34,6 +34,8 @@
 #include <string.h>
 
 #include "sidt.h"
+
+#ifdef __x86_64__
 #include "x86.h"
 
 #define MAX_CODE_SECTIONS 16
@@ -628,3 +630,31 @@ emit_bytes(struct emitter *e, const void *bytes, size_t size)
 	memcpy(e->code + e->size, bytes, size);
 	e->size += size;
 }
+#else /* __arm64__ */
+
+/*
+ * The arm64e shared cache needs no SIDT patching (its timebase is read from
+ * the generic timer, not the IDT), so cache preparation is a plain copy.
+ */
+void
+sidt_patches_init(struct sidt_patches *patches, uint64_t trampoline_base)
+{
+	memset(patches, 0, sizeof(*patches));
+	patches->trampoline_base = trampoline_base;
+}
+
+void
+sidt_patch_image(struct sidt_patches *patches, const struct mach_header_64 *header)
+{
+	(void)patches;
+	(void)header;
+}
+
+void
+sidt_patches_free(struct sidt_patches *patches)
+{
+	free(patches->trampolines);
+	free(patches->items);
+}
+
+#endif

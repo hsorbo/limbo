@@ -199,6 +199,7 @@ sys_bsdthread_create(user_addr_t func, user_addr_t func_arg, user_addr_t stack,
 	*(mach_port_name_t *)(tsd_base + registration.mach_thread_self_offset)
 			= kport;
 
+#ifdef __x86_64__
 	struct thread_state state = {
 			.rip = registration.threadstart,
 			.rsp = (uint64_t)stack,
@@ -211,6 +212,17 @@ sys_bsdthread_create(user_addr_t func, user_addr_t func_arg, user_addr_t stack,
 					| PTHREAD_START_TSD_BASE_SET,
 			.gs_base = tsd_base,
 	};
+#else
+	struct thread_state state = {
+			.pc = registration.threadstart,
+			.sp = (uint64_t)stack,
+			.x = { (uint64_t)pthread, kport, (uint64_t)func,
+					(uint64_t)func_arg, (uint64_t)stack,
+					(flags & ~PTHREAD_START_SUSPENDED)
+							| PTHREAD_START_TSD_BASE_SET },
+			.tpidr = tsd_base,
+	};
+#endif
 
 	int error = thread_start(thread, &state);
 	if (error != 0) {
@@ -399,6 +411,7 @@ static void
 workq_thread_state(struct workq_thread *wt, uint32_t flags,
 		mach_port_name_t kport, struct thread_state *state)
 {
+#ifdef __x86_64__
 	*state = (struct thread_state){
 			.rip = registration.wqthread,
 			.rsp = wt->stack_top,
@@ -408,6 +421,14 @@ workq_thread_state(struct workq_thread *wt, uint32_t flags,
 			.r8 = flags,
 			.gs_base = wt->self + registration.tsd_offset,
 	};
+#else
+	*state = (struct thread_state){
+			.pc = registration.wqthread,
+			.sp = wt->stack_top,
+			.x = { wt->self, kport, wt->stack_bottom, 0, flags },
+			.tpidr = wt->self + registration.tsd_offset,
+	};
+#endif
 
 	struct kqueue *kq = wt->request.kq;
 	if (kq == NULL) {
@@ -418,12 +439,20 @@ workq_thread_state(struct workq_thread *wt, uint32_t flags,
 			- WORKQ_KEVENT_LIST_LEN * sizeof(struct kevent_qos_s));
 	uint64_t *kqid = (uint64_t *)events - 1;
 	*kqid = kevent_kqid(kq);
-	state->rcx = (uint64_t)events;
-	state->r9 = kevent_bind(kq, wt->request.manager, events,
+	uint64_t nevents = kevent_bind(kq, wt->request.manager, events,
 			WORKQ_KEVENT_LIST_LEN,
 			(uint8_t *)kqid - WORKQ_KEVENT_DATA_SIZE,
 			WORKQ_KEVENT_DATA_SIZE);
-	state->rsp = ((uint64_t)kqid - WORKQ_KEVENT_DATA_SIZE) & ~15ULL;
+	uint64_t new_sp = ((uint64_t)kqid - WORKQ_KEVENT_DATA_SIZE) & ~15ULL;
+#ifdef __x86_64__
+	state->rcx = (uint64_t)events;
+	state->r9 = nevents;
+	state->rsp = new_sp;
+#else
+	state->x[3] = (uint64_t)events;
+	state->x[5] = nevents;
+	state->sp = new_sp;
+#endif
 }
 
 static uint32_t

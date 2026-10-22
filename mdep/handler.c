@@ -25,13 +25,17 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef __x86_64__
 #include <asm/prctl.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "handler.h"
 
+#ifdef __x86_64__
 int arch_prctl(int code, unsigned long addr);
+#endif
 
 static int
 sys_thread_set_tsd_base(uint64_t thread, uint64_t tsd_base)
@@ -40,7 +44,11 @@ sys_thread_set_tsd_base(uint64_t thread, uint64_t tsd_base)
 	fprintf(stderr, "thread_set_tsd_base(%p, %p)\n", (void *)thread,
 			(void *)tsd_base);
 #endif
+#ifdef __x86_64__
 	arch_prctl(ARCH_SET_GS, thread);
+#else
+	/* TODO(arm64): set the guest's TPIDRRO_EL0 thread-self base */
+#endif
 	return 0;
 }
 

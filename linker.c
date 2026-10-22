@@ -29,7 +29,7 @@
 #include <fcntl.h>
 #include <mach-o/fat.h>
 #include <mach-o/loader.h>
-#include <mach/i386/thread_status.h>
+#include <mach/machine/thread_status.h>
 #include <mach/mach.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +38,10 @@
 #include <unistd.h>
 
 #include "linker.h"
+
+#ifndef MAP_32BIT
+#define MAP_32BIT 0
+#endif
 
 static struct mach_header_64 *header_compatible(struct fat_header *fat);
 static void zero_bss(struct segment_command_64 *cmd, uintptr_t base_address);
@@ -150,16 +154,25 @@ linker_link(const char *path, const char **dylinker_path, uintptr_t *entry)
 		} break;
 		case LC_UNIXTHREAD: {
 			uint32_t *flavor = (uint32_t *)(command + 1);
-			_STRUCT_X86_THREAD_STATE64 *state;
-			switch (*flavor) {
-			case x86_THREAD_STATE64:
-				state = (_STRUCT_X86_THREAD_STATE64 *)(flavor
-						+ 2);
+#ifdef __x86_64__
+			if (*flavor == x86_THREAD_STATE64) {
+				_STRUCT_X86_THREAD_STATE64 *state
+						= (_STRUCT_X86_THREAD_STATE64 *)(
+								flavor + 2);
 				if (entry) {
 					*entry = base_address + state->rip;
 				}
-				break;
 			}
+#else
+			if (*flavor == ARM_THREAD_STATE64) {
+				_STRUCT_ARM_THREAD_STATE64 *state
+						= (_STRUCT_ARM_THREAD_STATE64 *)(
+								flavor + 2);
+				if (entry) {
+					*entry = base_address + state->pc;
+				}
+			}
+#endif
 		} break;
 		}
 

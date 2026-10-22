@@ -34,6 +34,7 @@
 #include <stdint.h>
 
 struct thread_state {
+#ifdef __x86_64__
 	uint64_t rip;
 	uint64_t rsp;
 	uint64_t rdi;
@@ -43,6 +44,12 @@ struct thread_state {
 	uint64_t r8;
 	uint64_t r9;
 	uint64_t gs_base;
+#else
+	uint64_t pc;
+	uint64_t sp;
+	uint64_t x[8];
+	uint64_t tpidr;
+#endif
 };
 
 struct thread;

@@ -31,7 +31,9 @@
 #endif
 
 #include <arpa/inet.h>
+#ifdef __x86_64__
 #include <asm/prctl.h>
+#endif
 #include <assert.h>
 #include <ctype.h>
 #include <elf.h>
@@ -39,7 +41,7 @@
 #include <fcntl.h>
 #include <mach-o/fat.h>
 #include <mach-o/loader.h>
-#include <mach/i386/thread_status.h>
+#include <mach/machine/thread_status.h>
 #include <mach/mach.h>
 #include <mach/machine/ndr_def.h> /* NDR_Record */
 #include <sched.h>

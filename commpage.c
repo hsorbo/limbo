@@ -29,10 +29,13 @@
 #include <stdio.h>
 #include <sys/mman.h>
 #include <time.h>
+#ifdef __x86_64__
 #include <x86intrin.h>
+#endif
 
 #include "commpage.h"
 
+#ifdef __x86_64__
 static void init_nanotime(void);
 static uint64_t sample_clocks(uint64_t *tsc);
 
@@ -96,3 +99,26 @@ sample_clocks(uint64_t *tsc)
 	*tsc = before + (after - before) / 2;
 	return now.tv_sec * 1000000000ULL + now.tv_nsec;
 }
+#else /* __arm64__ */
+int
+commpage_mmap(void)
+{
+	/* TODO(arm64): build the real arm64 commpage (CNTVCT-based timebase) */
+	void *commpage = mmap((void *)_COMM_PAGE_START_ADDRESS,
+			_COMM_PAGE_AREA_LENGTH, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_FIXED | MAP_ANON, -1, 0);
+	if (commpage == MAP_FAILED) {
+		perror("mmap");
+		return 1;
+	}
+	return 0;
+}
+
+uint64_t
+commpage_absolute_time(void)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return now.tv_sec * 1000000000ULL + now.tv_nsec;
+}
+#endif

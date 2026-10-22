@@ -26,6 +26,11 @@ add_project_arguments(
   language: 'c',
 )
 
+host_cpu = host_machine.cpu_family()
+if host_cpu == 'aarch64'
+  add_project_arguments('-D__arm64__', language: 'c')
+endif
+
 include_dir = [
   include_directories('include'),
   include_directories('.'),
@@ -38,6 +43,11 @@ subdir('bsd')
 subdir('mdep')
 subdir('osfmk')
 
+limbo_arch_sources = []
+if host_cpu == 'x86_64'
+  limbo_arch_sources = ['x86.c']
+endif
+
 limbo = executable('limbo',
   sources: [
     'commpage.c',
@@ -48,8 +58,7 @@ limbo = executable('limbo',
     'syscall.c',
     'sysroot.c',
     'thread.c',
-    'x86.c',
-  ],
+  ] + limbo_arch_sources,
   include_directories: include_dir,
   dependencies: [shm_dep, thread_dep],
   link_with: [bsd_lib, mdep_lib, osfmk_lib],
