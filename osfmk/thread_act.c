@@ -260,7 +260,7 @@ _kernelrpc_thread_policy_set(thread_act_t thread, thread_policy_flavor_t flavor,
 			(void *)thread, (void *)flavor, (void *)policy_info,
 			(void *)policy_infoCnt);
 #endif
-	unimplemented();
+	return KERN_SUCCESS;
 }
 
 kern_return_t
