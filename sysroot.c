@@ -80,9 +80,17 @@ sysroot_host_path(const char *path, int flags, char *buffer)
 		return path;
 	}
 
-	const char *name = strrchr(path, '/') + 1;
-	if (name[0] == '\0' || strcmp(name, ".") == 0
-			|| strcmp(name, "..") == 0) {
+	size_t path_length = strlen(path);
+	while (path_length > 1 && path[path_length - 1] == '/') {
+		path_length--;
+	}
+	const char *name = path + path_length;
+	while (name > path && name[-1] != '/') {
+		name--;
+	}
+	size_t name_length = (path + path_length) - name;
+	if (name_length == 0 || (name_length == 1 && name[0] == '.')
+			|| (name_length == 2 && name[0] == '.' && name[1] == '.')) {
 		return path;
 	}
 
@@ -97,7 +105,8 @@ sysroot_host_path(const char *path, int flags, char *buffer)
 	if (length == -1) {
 		return path;
 	}
-	snprintf(buffer + length, PATH_MAX - length, "/%s", name);
+	snprintf(buffer + length, PATH_MAX - length, "/%.*s",
+			(int)name_length, name);
 	return buffer;
 }
 
