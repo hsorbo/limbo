@@ -97,6 +97,7 @@ static void rebase_page(dyld_cache_slide_info2_t *info, uint64_t address);
 static void rebase_page_v5(dyld_cache_slide_info5_t *info, uint64_t address);
 static uint64_t sign_pointer(uint64_t value, void *location, bool address_div,
 		uint16_t diversity, bool key_is_data);
+static void patch_thread_self_reads(uint64_t address, uint64_t size);
 #endif
 static uint64_t trampolines_offset(const dyld_cache_header_t *header);
 static int prepare_subcache(const char *source, const char *destination,
@@ -359,6 +360,23 @@ static int
 map_cache_mapping(int f, dyld_cache_mapping_and_slide_info_t *m, bool prepared)
 {
 	if (prepared || m->slideInfoFileSize == 0) {
+#ifndef __x86_64__
+		if (m->initProt & VM_PROT_EXECUTE) {
+			void *base = mmap((void *)m->address, m->size,
+					PROT_READ | PROT_WRITE,
+					MAP_PRIVATE | MAP_FIXED, f, m->fileOffset);
+			if (base == MAP_FAILED) {
+				perror("mmap");
+				return 1;
+			}
+			patch_thread_self_reads(m->address, m->size);
+			if (mprotect(base, m->size, m->initProt) == -1) {
+				perror("mprotect");
+				return 1;
+			}
+			return 0;
+		}
+#endif
 		void *base = mmap((void *)m->address, m->size, m->initProt,
 				MAP_PRIVATE | MAP_FIXED, f, m->fileOffset);
 		if (base == MAP_FAILED) {
@@ -619,6 +637,21 @@ sign_pointer(uint64_t value, void *location, bool address_div,
 		asm("pacia %0, %1" : "+r"(value) : "r"(modifier));
 	}
 	return value;
+}
+
+#define MRS_TPIDRRO_EL0 0xd53bd060
+#define MRS_TPIDR_EL0   0xd53bd040
+#define MRS_REGISTER    0x0000001f
+
+static void
+patch_thread_self_reads(uint64_t address, uint64_t size)
+{
+	uint32_t *code = (uint32_t *)address;
+	for (uint64_t i = 0; i < size / sizeof(uint32_t); i++) {
+		if ((code[i] & ~MRS_REGISTER) == MRS_TPIDRRO_EL0) {
+			code[i] = MRS_TPIDR_EL0 | (code[i] & MRS_REGISTER);
+		}
+	}
 }
 #endif
 
