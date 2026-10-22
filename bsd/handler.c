@@ -3245,7 +3245,7 @@ sys_guarded_open_np(user_addr_t path, void *guard, uint32_t guardflags,
 			(void *)guard, (void *)guardflags, (void *)flags,
 			(void *)mode);
 #endif
-	unimplemented();
+	return sys_open(path, flags, mode);
 }
 
 int
@@ -3255,7 +3255,7 @@ sys_guarded_close_np(int fd, void *guard)
 	fprintf(stderr, "guarded_close_np(%p, %p)\n", (void *)fd,
 			(void *)guard);
 #endif
-	unimplemented();
+	return errno_map(close(fd));
 }
 
 int
@@ -3666,7 +3666,7 @@ sys_guarded_pwrite_np(int fd, void *guard, user_addr_t buf, user_size_t nbyte,
 			(void *)guard, (void *)buf, (void *)nbyte,
 			(void *)offset);
 #endif
-	unimplemented();
+	return sys_pwrite(fd, buf, nbyte, offset);
 }
 
 user_ssize_t
@@ -3676,7 +3676,7 @@ sys_guarded_writev_np(int fd, void *guard, void *iovp, int iovcnt)
 	fprintf(stderr, "guarded_writev_np(%p, %p, %p, %p)\n", (void *)fd,
 			(void *)guard, (void *)iovp, (void *)iovcnt);
 #endif
-	unimplemented();
+	return sys_writev(fd, iovp, iovcnt);
 }
 
 int
