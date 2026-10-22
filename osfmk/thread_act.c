@@ -28,6 +28,9 @@
 #include <mach/mach.h>
 #include <stdio.h>
 
+#include "ipc.h"
+#include "thread.h"
+
 kern_return_t
 thread_terminate(mach_port_t target_act)
 {
@@ -91,7 +94,16 @@ thread_suspend(thread_read_t target_act)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "thread_suspend(%p)\n", (void *)target_act);
 #endif
-	unimplemented();
+	struct thread *thread
+			= ipc_kobject_lookup(target_act, IPC_KOBJECT_THREAD);
+	if (thread == NULL) {
+		return KERN_INVALID_ARGUMENT;
+	}
+	if (thread != thread_current()) {
+		unimplemented();
+	}
+	thread_suspend_self();
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -100,7 +112,13 @@ thread_resume(thread_read_t target_act)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "thread_resume(%p)\n", (void *)target_act);
 #endif
-	unimplemented();
+	struct thread *thread
+			= ipc_kobject_lookup(target_act, IPC_KOBJECT_THREAD);
+	if (thread == NULL) {
+		return KERN_INVALID_ARGUMENT;
+	}
+	thread_resume_thread(thread);
+	return KERN_SUCCESS;
 }
 
 kern_return_t

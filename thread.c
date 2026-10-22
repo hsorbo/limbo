@@ -70,6 +70,8 @@ thread_new(thread_continuation_t continuation, void *context)
 			ipc_kobject_alloc(IPC_KOBJECT_THREAD, thread));
 	thread->continuation = continuation;
 	thread->context = context;
+	pthread_mutex_init(&thread->suspend_lock, NULL);
+	pthread_cond_init(&thread->resumed, NULL);
 	return thread;
 }
 
@@ -193,4 +195,26 @@ thread_exit(void *stack, size_t stack_size)
 	current->stack = stack;
 	current->stack_size = stack_size;
 	siglongjmp(current->kernel, 1);
+}
+
+void
+thread_suspend_self(void)
+{
+	struct thread *thread = thread_current();
+	pthread_mutex_lock(&thread->suspend_lock);
+	thread->suspend_count++;
+	while (thread->suspend_count != 0) {
+		pthread_cond_wait(&thread->resumed, &thread->suspend_lock);
+	}
+	pthread_mutex_unlock(&thread->suspend_lock);
+}
+
+void
+thread_resume_thread(struct thread *thread)
+{
+	pthread_mutex_lock(&thread->suspend_lock);
+	if (thread->suspend_count != 0 && --thread->suspend_count == 0) {
+		pthread_cond_broadcast(&thread->resumed);
+	}
+	pthread_mutex_unlock(&thread->suspend_lock);
 }
