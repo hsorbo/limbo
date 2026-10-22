@@ -337,7 +337,7 @@ task_policy_set(task_policy_set_t task, task_policy_flavor_t flavor,
 			(void *)flavor, (void *)policy_info,
 			(void *)policy_infoCnt);
 #endif
-	unimplemented();
+	return KERN_SUCCESS;
 }
 
 kern_return_t
