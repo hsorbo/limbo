@@ -44,6 +44,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "commpage.h"
 #include "handler.h"
 #include "kevent.h"
 #include "osfmk/ipc.h"
@@ -635,10 +636,18 @@ timer_arm(struct knote *kn)
 
 	if (fflags & NOTE_ABSOLUTE) {
 		kn->interval = 0;
-		kn->deadline = (fflags & NOTE_MACHTIME) ? nanoseconds
-							: now_monotonic()
-						+ (nanoseconds > now_realtime() ? nanoseconds - now_realtime()
-										: 0);
+		uint64_t delay;
+		if (fflags & NOTE_MACHTIME) {
+			uint64_t now = commpage_absolute_time();
+			delay = commpage_absolute_to_nanoseconds(
+					kn->kev.data > (int64_t)now
+							? kn->kev.data - now
+							: 0);
+		} else {
+			uint64_t now = now_realtime();
+			delay = nanoseconds > now ? nanoseconds - now : 0;
+		}
+		kn->deadline = now_monotonic() + delay;
 	} else {
 		kn->interval = (kn->kev.flags & (EV_ONESHOT | EV_DISPATCH))
 				? 0
@@ -661,7 +670,10 @@ timer_nanoseconds(uint32_t fflags, int64_t data)
 	if (fflags & NOTE_USECONDS) {
 		return data * 1000ULL;
 	}
-	if (fflags & (NOTE_NSECONDS | NOTE_MACHTIME)) {
+	if (fflags & NOTE_MACHTIME) {
+		return commpage_absolute_to_nanoseconds(data);
+	}
+	if (fflags & NOTE_NSECONDS) {
 		return data;
 	}
 	return data * 1000000ULL;
