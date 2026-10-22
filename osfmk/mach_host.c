@@ -73,6 +73,12 @@ host_info(host_t host, host_flavor_t flavor, host_info_t host_info_out,
 		/* TODO: This struct should be non-zero */
 		*host_info_outCnt = HOST_PRIORITY_INFO_COUNT;
 	} break;
+	case HOST_SCHED_INFO: {
+		host_sched_info_t sched_info = (host_sched_info_t)host_info_out;
+		sched_info->min_timeout = 1;
+		sched_info->min_quantum = 1;
+		*host_info_outCnt = HOST_SCHED_INFO_COUNT;
+	} break;
 	case HOST_PREFERRED_USER_ARCH: {
 		host_preferred_user_arch_t preferred_arch
 				= (host_preferred_user_arch_t)host_info_out;
