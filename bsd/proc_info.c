@@ -47,6 +47,7 @@
 #define PROC_PIDTBSDINFO           3
 #define PROC_PIDT_SHORTBSDINFO     13
 #define PROC_PIDUNIQIDENTIFIERINFO 17
+#define PROC_PIDCOALITIONINFO      20
 
 #define SRUN           2
 #define PROC_FLAG_LP64 0x10
@@ -194,6 +195,14 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 		info->p_uniqueid = process.pid;
 		info->p_puniqueid = process.ppid;
 		return sizeof(*info);
+	}
+	case PROC_PIDCOALITIONINFO: {
+		uint64_t info[5] = {0};
+		if (buffersize < (int32_t)sizeof(info)) {
+			return _ENOMEM;
+		}
+		memcpy(buffer, info, sizeof(info));
+		return sizeof(info);
 	}
 	default:
 		unimplemented();
