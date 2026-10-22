@@ -42,6 +42,7 @@
 #include <sys/auxv.h>
 #include <sys/prctl.h>
 #include <ucontext.h>
+#include <unistd.h>
 
 #include "bsd/handler.h"
 #include "bsd/xnu-errno.h"
@@ -153,6 +154,7 @@ emulate_system_register(int sig, siginfo_t *info, void *ucontext)
 #define SYSCALL_CLASS_DIAG (4 << 24)
 
 #define SYSCALL_CLASS_MDEP_ARM64 0x80000000
+#define SVC_LINUX 0xd4000001
 
 #define BSD_SYS_ulock_wait  515
 #define BSD_SYS_ulock_wake  516
@@ -242,6 +244,12 @@ dispatch_syscall(mcontext_t *mc)
 	uint64_t arg5 = regs[4];
 	uint64_t arg6 = regs[5];
 	uint64_t *sp = (uint64_t *)mc->sp;
+
+	if (((uint32_t *)mc->pc)[-1] == SVC_LINUX) {
+		regs[0] = syscall(regs[8], regs[0], regs[1], regs[2], regs[3],
+				regs[4], regs[5]);
+		return;
+	}
 
 	int64_t number = (int64_t)regs[16];
 	if (number < 0) {
