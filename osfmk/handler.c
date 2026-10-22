@@ -525,7 +525,10 @@ sys_mach_generate_activity_id(
 	fprintf(stderr, "mach_generate_activity_id(%p, %p, %p)\n",
 			(void *)target, (void *)count, (void *)activity_id);
 #endif
-	unimplemented();
+	static uint64_t next_activity_id = 1;
+	*activity_id = __atomic_fetch_add(
+			&next_activity_id, count, __ATOMIC_RELAXED);
+	return KERN_SUCCESS;
 }
 
 kern_return_t
