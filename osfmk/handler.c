@@ -365,7 +365,8 @@ sys__kernelrpc_mach_vm_purgable_control_trap(mach_port_name_t target,
 			(void *)target, (void *)address, (void *)control,
 			(void *)state);
 #endif
-	unimplemented();
+	return _kernelrpc_mach_vm_purgable_control(
+			target, address, control, state);
 }
 
 kern_return_t
