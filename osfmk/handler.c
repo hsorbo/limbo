@@ -743,8 +743,7 @@ sys_mach_timebase_info_trap(void *info)
 	fprintf(stderr, "mach_timebase_info_trap(%p)\n", (void *)info);
 #endif
 	uint32_t *numer_denom = info;
-	numer_denom[0] = 1;
-	numer_denom[1] = 1;
+	commpage_timebase(&numer_denom[0], &numer_denom[1]);
 	return KERN_SUCCESS;
 }
 
@@ -756,7 +755,8 @@ sys_mach_wait_until_trap(uint64_t deadline)
 #endif
 	uint64_t now;
 	while ((now = commpage_absolute_time()) < deadline) {
-		uint64_t delay = deadline - now;
+		uint64_t delay = commpage_absolute_to_nanoseconds(
+				deadline - now);
 		nanosleep(&(struct timespec){.tv_sec = delay / 1000000000,
 					  .tv_nsec = delay % 1000000000},
 				NULL);
