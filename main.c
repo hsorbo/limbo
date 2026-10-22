@@ -97,33 +97,40 @@ run(int argc, char *argv[], char *envp[])
 	prctl(PR_SET_NAME, basename(argv[1]));
 	prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
 
-	/* Map the shared cache into our memory space, persisted across fork()
-	 */
-	if (shared_cache_mmap()) {
-		fprintf(stderr,
-				"limbo: could not map and rebase shared "
-				"cache\n");
-		return 1;
-	}
-
 	/* Map the target executable and determine its interpreter */
 	const char *dylinker_path = NULL;
-	uint8_t *exe_base = linker_link(argv[1], &dylinker_path, NULL);
-	if (exe_base == NULL || dylinker_path == NULL) {
+	uintptr_t entry = 0;
+	uint8_t *exe_base = linker_link(argv[1], &dylinker_path, &entry);
+	if (exe_base == NULL) {
 		fprintf(stderr, "limbo: failed to load binary\n");
 		return 1;
 	}
 
-	/* Map the target executable's interpreter (dyld) */
+	/* Map the interpreter (dyld); a preload binary runs its own entry */
 	char dylinker_host_path[PATH_MAX];
-	uintptr_t entry = 0;
-	uint8_t *dyld_base = linker_link(
-			sysroot_host_path(dylinker_path, 0, dylinker_host_path),
-			NULL, &entry);
-	if (dyld_base == NULL || entry == 0) {
-		fprintf(stderr,
-				"limbo: failed to load binary "
-				"interpreter\n");
+	if (dylinker_path != NULL) {
+		/* Map the shared cache into our memory space, persisted across
+		 * fork(); only dyld-based binaries consult it */
+		if (shared_cache_mmap()) {
+			fprintf(stderr,
+					"limbo: could not map and rebase shared "
+					"cache\n");
+			return 1;
+		}
+
+		entry = 0;
+		uint8_t *dyld_base = linker_link(
+				sysroot_host_path(dylinker_path, 0,
+						dylinker_host_path),
+				NULL, &entry);
+		if (dyld_base == NULL || entry == 0) {
+			fprintf(stderr,
+					"limbo: failed to load binary "
+					"interpreter\n");
+			return 1;
+		}
+	} else if (entry == 0) {
+		fprintf(stderr, "limbo: binary has no entry point\n");
 		return 1;
 	}
 
@@ -150,7 +157,7 @@ run(int argc, char *argv[], char *envp[])
 	struct thread_state state = {
 			.pc = entry,
 			.sp = stack_base,
-			.tpidr = (uint64_t)dyld_ls,
+			.tpidr = (dylinker_path != NULL) ? (uint64_t)dyld_ls : 0,
 	};
 #endif
 	thread_enter(&state);
