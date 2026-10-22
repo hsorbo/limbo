@@ -62,9 +62,12 @@ static __thread bool rdx_pending;
 static __thread uint64_t rdx_value;
 #else
 #define PSTATE_C (1u << 29)
+#define MRS_OPCODE 0xd53
+static void emulate_system_register(int sig, siginfo_t *info, void *ucontext);
 static void dispatch_syscall(mcontext_t *mc);
 static void set_bsd_result(mcontext_t *mc, int64_t result);
 static uint64_t host_thread_pointer;
+static __thread uint64_t guest_thread_pointer;
 static __thread bool x1_pending;
 static __thread uint64_t x1_value;
 #endif
@@ -101,9 +104,35 @@ syscall_handler_install(void)
 	}
 #ifndef __x86_64__
 	asm volatile("mrs %0, tpidr_el0" : "=r"(host_thread_pointer));
+	struct sigaction ill = {0};
+	ill.sa_sigaction = emulate_system_register;
+	ill.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTORER;
+	ill.sa_restorer = limbo_rt_sigreturn;
+	if (sigaction(SIGILL, &ill, NULL) == -1) {
+		perror("sigaction");
+		return 1;
+	}
 #endif
 	return 0;
 }
+
+#ifndef __x86_64__
+__attribute__((no_stack_protector)) static void
+emulate_system_register(int sig, siginfo_t *info, void *ucontext)
+{
+	mcontext_t *mc = &((ucontext_t *)ucontext)->uc_mcontext;
+	uint32_t instruction = *(uint32_t *)mc->pc;
+	if ((instruction >> 20) == MRS_OPCODE) {
+		unsigned destination = instruction & 0x1f;
+		if (destination != 31) {
+			mc->regs[destination] = 0;
+		}
+		mc->pc += 4;
+		return;
+	}
+	abort();
+}
+#endif
 
 /*
  * System calls in Darwin are split into classes, as follows:
@@ -122,6 +151,8 @@ syscall_handler_install(void)
 #define SYSCALL_CLASS_UNIX (2 << 24)
 #define SYSCALL_CLASS_MDEP (3 << 24)
 #define SYSCALL_CLASS_DIAG (4 << 24)
+
+#define SYSCALL_CLASS_MDEP_ARM64 0x80000000
 
 #define BSD_SYS_ulock_wait  515
 #define BSD_SYS_ulock_wake  516
@@ -184,13 +215,20 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 __attribute__((no_stack_protector)) static void
 handle_syscall(int sig, siginfo_t *info, void *ucontext)
 {
-	uint64_t guest_thread_pointer;
-	asm volatile("mrs %0, tpidr_el0" : "=r"(guest_thread_pointer));
+	uint64_t entry_pointer;
+	asm volatile("mrs %0, tpidr_el0" : "=r"(entry_pointer));
 	asm volatile("msr tpidr_el0, %0" ::"r"(host_thread_pointer));
+	guest_thread_pointer = entry_pointer;
 
 	dispatch_syscall(&((ucontext_t *)ucontext)->uc_mcontext);
 
 	asm volatile("msr tpidr_el0, %0" ::"r"(guest_thread_pointer));
+}
+
+void
+syscall_set_guest_thread_pointer(uint64_t pointer)
+{
+	guest_thread_pointer = pointer;
 }
 
 static void
@@ -208,6 +246,9 @@ dispatch_syscall(mcontext_t *mc)
 	int64_t number = (int64_t)regs[16];
 	if (number < 0) {
 		regs[0] = sys_osfmk((unsigned long)-number, arg1, arg2, arg3,
+				arg4, arg5, arg6, sp);
+	} else if ((uint64_t)number & SYSCALL_CLASS_MDEP_ARM64) {
+		regs[0] = sys_mdep((unsigned long)number, arg1, arg2, arg3,
 				arg4, arg5, arg6, sp);
 	} else {
 		int64_t result = sys_bsd((unsigned long)number, arg1, arg2,

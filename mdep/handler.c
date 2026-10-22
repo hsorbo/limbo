@@ -32,6 +32,7 @@
 #include <stdlib.h>
 
 #include "handler.h"
+#include "syscall.h"
 
 #ifdef __x86_64__
 int arch_prctl(int code, unsigned long addr);
@@ -47,7 +48,7 @@ sys_thread_set_tsd_base(uint64_t thread, uint64_t tsd_base)
 #ifdef __x86_64__
 	arch_prctl(ARCH_SET_GS, thread);
 #else
-	/* TODO(arm64): set the guest's TPIDRRO_EL0 thread-self base */
+	syscall_set_guest_thread_pointer(thread);
 #endif
 	return 0;
 }
@@ -57,8 +58,13 @@ sys_mdep(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		uint64_t arg4, uint64_t arg5, uint64_t arg6, uint64_t *sp)
 {
 	switch (syscall) {
+#ifdef __x86_64__
 	case 0x3:
 		return sys_thread_set_tsd_base(arg1, arg2);
+#else
+	case 0x80000000:
+		return sys_thread_set_tsd_base(arg1, arg2);
+#endif
 	default:
 #ifdef ENABLE_STRACE
 		fprintf(stderr,

@@ -33,3 +33,6 @@
 int syscall_handler_install(void);
 int syscall_dispatch_enable(void);
 void syscall_set_rdx(uint64_t value);
+#ifndef __x86_64__
+void syscall_set_guest_thread_pointer(uint64_t pointer);
+#endif
