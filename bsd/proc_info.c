@@ -204,7 +204,7 @@ static int
 setcontrol(uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 {
 	if (flavor != PROC_SELFSET_THREADNAME) {
-		unimplemented();
+		return 0;
 	}
 
 	char name[16];
