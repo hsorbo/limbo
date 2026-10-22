@@ -3296,7 +3296,7 @@ sys_proc_rlimit_control(uint64_t pid, int flavor, void *arg)
 	fprintf(stderr, "proc_rlimit_control(%p, %p, %p)\n", (void *)pid,
 			(void *)flavor, (void *)arg);
 #endif
-	unimplemented();
+	return 0;
 }
 
 int
