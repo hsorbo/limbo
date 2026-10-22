@@ -2672,7 +2672,15 @@ sys_iopolicysys(int cmd, void *arg)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "iopolicysys(%p, %p)\n", (void *)cmd, (void *)arg);
 #endif
-	unimplemented();
+	struct {
+		int32_t scope;
+		int32_t type;
+		int32_t policy;
+	} *param = arg;
+	if (cmd == 1) {
+		param->policy = 0;
+	}
+	return 0;
 }
 
 int
