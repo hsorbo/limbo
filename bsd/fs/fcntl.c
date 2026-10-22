@@ -193,6 +193,7 @@ sys_sys_fcntl(int fd, int cmd, long arg)
 		return record_lock_timeout(fd, F_SETLK, (void *)arg);
 	case _F_OFD_SETLKWTIMEOUT:
 		return record_lock_timeout(fd, F_OFD_SETLK, (void *)arg);
+	case _F_SETCONFINED:
 	case _F_RDADVISE:
 	case _F_RDAHEAD:
 	case _F_NOCACHE:
