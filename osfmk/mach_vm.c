@@ -475,7 +475,7 @@ mach_vm_deferred_reclamation_buffer_allocate(task_t target_task,
 			(void *)target_task, (void *)address,
 			(void *)next_deadline, (void *)len, (void *)max_len);
 #endif
-	unimplemented();
+	return KERN_NOT_SUPPORTED;
 }
 
 kern_return_t
