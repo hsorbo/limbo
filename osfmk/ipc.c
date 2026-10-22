@@ -787,7 +787,8 @@ transfer_right(mach_port_name_t name, mach_msg_type_name_t disposition,
 				}
 				break;
 			case MACH_MSG_TYPE_MOVE_RECEIVE:
-				unimplemented();
+				entry->type &= ~MACH_PORT_TYPE_RECEIVE;
+				break;
 			}
 			return MACH_MSG_SUCCESS;
 		}
