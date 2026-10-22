@@ -35,6 +35,7 @@
 #endif
 #include <elf.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,6 +72,18 @@ static uint64_t host_thread_pointer;
 static __thread uint64_t guest_thread_pointer;
 static __thread bool x1_pending;
 static __thread uint64_t x1_value;
+
+struct host_tls_binding {
+	uint64_t guest_pointer;
+	uint64_t host_pointer;
+};
+
+#define HOST_TLS_BINDING_MAX 4096
+static struct host_tls_binding host_tls_bindings[HOST_TLS_BINDING_MAX];
+static _Atomic uint32_t host_tls_binding_count;
+static atomic_flag host_tls_binding_lock;
+
+static uint64_t host_thread_pointer_for(uint64_t guest_pointer);
 #endif
 
 #ifndef __x86_64__
@@ -217,13 +230,21 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 __attribute__((no_stack_protector)) static void
 handle_syscall(int sig, siginfo_t *info, void *ucontext)
 {
+	mcontext_t *mc = &((ucontext_t *)ucontext)->uc_mcontext;
+
+	if (((uint32_t *)mc->pc)[-1] == SVC_LINUX) {
+		dispatch_syscall(mc);
+		return;
+	}
+
 	uint64_t entry_pointer;
 	asm volatile("mrs %0, tpidr_el0" : "=r"(entry_pointer));
-	asm volatile("msr tpidr_el0, %0" ::"r"(host_thread_pointer));
+	asm volatile("msr tpidr_el0, %0" ::"r"(host_thread_pointer_for(
+							     entry_pointer)));
 	uint64_t outer_pointer = guest_thread_pointer;
 	guest_thread_pointer = entry_pointer;
 
-	dispatch_syscall(&((ucontext_t *)ucontext)->uc_mcontext);
+	dispatch_syscall(mc);
 
 	uint64_t resume_pointer = guest_thread_pointer;
 	guest_thread_pointer = outer_pointer;
@@ -234,6 +255,45 @@ void
 syscall_set_guest_thread_pointer(uint64_t pointer)
 {
 	guest_thread_pointer = pointer;
+
+	uint64_t host;
+	asm volatile("mrs %0, tpidr_el0" : "=r"(host));
+
+	while (atomic_flag_test_and_set_explicit(
+			&host_tls_binding_lock, memory_order_acquire))
+		;
+
+	uint32_t count = atomic_load_explicit(
+			&host_tls_binding_count, memory_order_relaxed);
+	for (uint32_t i = 0; i < count; i++) {
+		if (host_tls_bindings[i].guest_pointer == pointer) {
+			host_tls_bindings[i].host_pointer = host;
+			atomic_flag_clear_explicit(
+					&host_tls_binding_lock,
+					memory_order_release);
+			return;
+		}
+	}
+
+	host_tls_bindings[count].guest_pointer = pointer;
+	host_tls_bindings[count].host_pointer = host;
+	atomic_store_explicit(&host_tls_binding_count, count + 1,
+			memory_order_release);
+	atomic_flag_clear_explicit(
+			&host_tls_binding_lock, memory_order_release);
+}
+
+static uint64_t
+host_thread_pointer_for(uint64_t guest_pointer)
+{
+	uint32_t count = atomic_load_explicit(
+			&host_tls_binding_count, memory_order_acquire);
+	for (uint32_t i = 0; i < count; i++) {
+		if (host_tls_bindings[i].guest_pointer == guest_pointer) {
+			return host_tls_bindings[i].host_pointer;
+		}
+	}
+	return host_thread_pointer;
 }
 
 static void

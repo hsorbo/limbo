@@ -115,6 +115,9 @@ thread_main(void *arg)
 			return NULL;
 		}
 	}
+#ifndef __x86_64__
+	syscall_set_guest_thread_pointer(thread->state.tpidr);
+#endif
 	thread_enter(&thread->state);
 }
 
