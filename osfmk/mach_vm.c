@@ -62,6 +62,7 @@ static kern_return_t remap_share(mach_vm_address_t *target_address,
 		mach_vm_address_t src_address, vm_prot_t protection);
 static int share_in_place(mach_vm_address_t address, mach_vm_size_t size,
 		vm_prot_t protection);
+static int copy_range(mach_vm_address_t address, mach_vm_size_t size);
 static kern_return_t remap_copy(mach_vm_address_t *target_address,
 		mach_vm_size_t size, mach_vm_offset_t mask, int flags,
 		mach_vm_address_t src_address, vm_prot_t *protection);
@@ -409,15 +410,12 @@ static int
 share_in_place(mach_vm_address_t address, mach_vm_size_t size,
 		vm_prot_t protection)
 {
-	int fd = memfd_create("remap", MFD_CLOEXEC);
-	if (fd == -1 || ftruncate(fd, size) == -1
-			|| pwrite(fd, (void *)address, size, 0) != (ssize_t)size
-			|| mmap((void *)address, size, protection,
+	int fd = copy_range(address, size);
+	if (fd != -1
+			&& mmap((void *)address, size, protection,
 					   MAP_SHARED | MAP_FIXED, fd, 0)
 					== MAP_FAILED) {
-		if (fd != -1) {
-			close(fd);
-		}
+		close(fd);
 		return -1;
 	}
 	return fd;
@@ -514,13 +512,18 @@ mach_make_memory_entry(vm_map_t target_task, memory_object_size_t *size,
 			(void *)parent_handle);
 #endif
 	if (parent_handle != MACH_PORT_NULL
-			|| !(permission & MAP_MEM_VM_SHARE)) {
+			|| !(permission
+					& (MAP_MEM_VM_SHARE
+							| MAP_MEM_VM_COPY))) {
 		unimplemented();
 	}
 
 	mach_vm_address_t start = offset & ~(mach_vm_address_t)PAGE_MASK;
 	mach_vm_address_t end = (offset + *size + PAGE_MASK) & ~PAGE_MASK;
-	int fd = share_in_place(start, end - start, region_protection(start));
+	int fd = (permission & MAP_MEM_VM_SHARE)
+			? share_in_place(start, end - start,
+					  region_protection(start))
+			: copy_range(start, end - start);
 	if (fd == -1) {
 		return KERN_INVALID_ADDRESS;
 	}
@@ -538,6 +541,21 @@ mach_make_memory_entry(vm_map_t target_task, memory_object_size_t *size,
 	}
 	*object_handle = ipc_kobject_alloc(IPC_KOBJECT_MEMORY_ENTRY, entry);
 	return KERN_SUCCESS;
+}
+
+static int
+copy_range(mach_vm_address_t address, mach_vm_size_t size)
+{
+	int fd = memfd_create("memory entry", MFD_CLOEXEC);
+	if (fd == -1 || ftruncate(fd, size) == -1
+			|| pwrite(fd, (void *)address, size, 0)
+					!= (ssize_t)size) {
+		if (fd != -1) {
+			close(fd);
+		}
+		return -1;
+	}
+	return fd;
 }
 
 kern_return_t
