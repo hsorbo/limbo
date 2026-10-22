@@ -507,7 +507,8 @@ _kernelrpc_mach_vm_purgable_control(vm_map_t target_task,
 			(void *)target_task, (void *)address, (void *)control,
 			(void *)state);
 #endif
-	unimplemented();
+	*state = VM_PURGABLE_NONVOLATILE;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
