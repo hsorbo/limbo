@@ -84,12 +84,13 @@
 
 #define PT_DENY_ATTACH 31
 
+static __thread unsigned long current_syscall;
+
 int
 sys_nosys(void)
 {
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "nosys()\n");
-#endif
+	fprintf(stderr, "limbo: system call %#lx is not implemented\n",
+			current_syscall);
 	unimplemented();
 }
 
@@ -4056,6 +4057,7 @@ uint64_t
 sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		uint64_t arg4, uint64_t arg5, uint64_t arg6, uint64_t *sp)
 {
+	current_syscall = syscall;
 	switch (syscall) {
 	case 0x0:
 		return sys_bsd(arg1, arg2, arg3, arg4, arg5, arg6, sp[1],
