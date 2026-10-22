@@ -104,8 +104,8 @@ int
 sys___mac_syscall(char *policy, int call, user_addr_t arg)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "__mac_syscall(%p, %p, %p)\n", (void *)policy,
-			(void *)call, (void *)arg);
+	fprintf(stderr, "__mac_syscall(\"%s\", %p, %p)\n", policy, (void *)call,
+			(void *)arg);
 #endif
 	if (strncmp(policy, "AMFI", MAC_MAX_POLICY_NAME) == 0) {
 		return amfi_handle_syscall(call, arg);
