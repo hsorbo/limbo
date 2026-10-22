@@ -30,9 +30,11 @@
 #define _GNU_SOURCE
 #endif
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "bsd/xnu-errno.h"
@@ -131,6 +133,13 @@ struct darwin_flock {
 
 static int status_flags_to_darwin(int flags);
 static int status_flags_from_darwin(int flags);
+struct darwin_flocktimeout {
+	struct darwin_flock fl;
+	struct timespec timeout;
+};
+
+static int record_lock_timeout(
+		int fd, int cmd, struct darwin_flocktimeout *lock);
 static int record_lock(int fd, int cmd, struct darwin_flock *lock);
 static short lock_type_from_darwin(short type);
 static short lock_type_to_darwin(short type);
@@ -180,6 +189,10 @@ sys_sys_fcntl(int fd, int cmd, long arg)
 		return record_lock(fd, F_OFD_SETLK, (void *)arg);
 	case _F_OFD_SETLKW:
 		return record_lock(fd, F_OFD_SETLKW, (void *)arg);
+	case _F_SETLKWTIMEOUT:
+		return record_lock_timeout(fd, F_SETLK, (void *)arg);
+	case _F_OFD_SETLKWTIMEOUT:
+		return record_lock_timeout(fd, F_OFD_SETLK, (void *)arg);
 	case _F_RDADVISE:
 	case _F_RDAHEAD:
 	case _F_NOCACHE:
@@ -242,6 +255,34 @@ status_flags_from_darwin(int flags)
 		result |= O_ASYNC;
 	}
 	return result;
+}
+
+static int
+record_lock_timeout(int fd, int cmd, struct darwin_flocktimeout *lock)
+{
+	struct timespec deadline;
+	clock_gettime(CLOCK_MONOTONIC, &deadline);
+	deadline.tv_sec += lock->timeout.tv_sec;
+	deadline.tv_nsec += lock->timeout.tv_nsec;
+	if (deadline.tv_nsec >= 1000000000) {
+		deadline.tv_sec++;
+		deadline.tv_nsec -= 1000000000;
+	}
+
+	while (true) {
+		int result = record_lock(fd, cmd, &lock->fl);
+		if (result != _EAGAIN && result != _EACCES) {
+			return result;
+		}
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		if (now.tv_sec > deadline.tv_sec
+				|| (now.tv_sec == deadline.tv_sec
+						&& now.tv_nsec >= deadline.tv_nsec)) {
+			return _ETIMEDOUT;
+		}
+		nanosleep(&(struct timespec){.tv_nsec = 1000000}, NULL);
+	}
 }
 
 static int
