@@ -153,6 +153,8 @@ sys_sys_fcntl(int fd, int cmd, long arg)
 				fd, F_SETFL, status_flags_from_darwin(arg)));
 	case _F_FULLFSYNC:
 		return errno_map(fsync(fd));
+	case _F_RDADVISE:
+	case _F_RDAHEAD:
 	case _F_NOCACHE:
 	case _F_SINGLE_WRITER:
 	case _F_SETNOSIGPIPE:
