@@ -246,13 +246,15 @@ dispatch_syscall(mcontext_t *mc)
 	uint64_t arg4 = regs[3];
 	uint64_t arg5 = regs[4];
 	uint64_t arg6 = regs[5];
-	uint64_t *sp = (uint64_t *)mc->sp;
 
 	if (((uint32_t *)mc->pc)[-1] == SVC_LINUX) {
 		regs[0] = syscall(regs[8], regs[0], regs[1], regs[2], regs[3],
 				regs[4], regs[5]);
 		return;
 	}
+
+	uint64_t *overflow = (uint64_t *)mc->sp;
+	uint64_t sp[] = {0, regs[6], regs[7], overflow[0], overflow[1]};
 
 	int64_t number = (int64_t)regs[16];
 	if (number < 0) {
