@@ -25,6 +25,7 @@ osfmk_lib = static_library('osfmk',
     'task_restartableServer.c',
     'thread_act.c',
     'thread_actServer.c',
+    'xpc_bootstrap.c',
   ],
   include_directories: include_dir,
   c_args: [

@@ -545,7 +545,8 @@ mach_port_is_connection_for_service(ipc_space_t task,
 			(void *)task, (void *)connection_port,
 			(void *)service_port, (void *)filter_policy_id);
 #endif
-	unimplemented();
+	*filter_policy_id = 0;
+	return KERN_SUCCESS;
 }
 
 kern_return_t

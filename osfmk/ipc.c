@@ -43,6 +43,7 @@
 
 #include "broker.h"
 #include "broker_client.h"
+#include "xpc_bootstrap.h"
 #include "bsd/kevent.h"
 #include "ipc.h"
 
@@ -53,6 +54,7 @@ typedef enum {
 
 struct ipc_kmsg {
 	struct ipc_kmsg *next;
+	pid_t sender_pid;
 	mach_msg_header_t header[];
 };
 
@@ -82,6 +84,8 @@ struct remote_header {
 	mach_msg_type_name_t dest_disposition;
 	mach_msg_type_name_t reply_disposition;
 	uint64_t reply_global_id;
+	pid_t sender_pid;
+	uint32_t descriptor_count;
 };
 
 struct task_subsystem;
@@ -124,9 +128,18 @@ static struct ipc_entry *entries;
 static uint32_t entry_count;
 static struct ipc_port *kobjects[IPC_KOBJECT_BOOTSTRAP + 1];
 static uint32_t export_counter;
+static uint32_t transfer_counter;
 
 static mach_msg_return_t remote_send(mach_msg_header_t *header,
-		mach_msg_size_t size);
+		mach_msg_size_t size, pid_t sender_pid);
+static uint32_t export_body_ports(mach_msg_header_t *header,
+		uint64_t *global_ids, uint32_t dest_guest_id);
+static uint64_t export_body_port(mach_port_name_t name,
+		mach_msg_type_name_t disposition, uint32_t dest_guest_id);
+static void import_body_ports(mach_msg_header_t *header,
+		const uint64_t *global_ids);
+static mach_port_name_t import_body_port(uint64_t global_id,
+		mach_msg_type_name_t type);
 static uint64_t export_local_port(mach_port_name_t name);
 static struct ipc_port *port_for_global_id(uint64_t global_id);
 static mach_port_name_t import_remote_send(uint64_t global_id);
@@ -134,7 +147,7 @@ static mach_port_name_t import_remote_send(uint64_t global_id);
 static mach_port_name_t kobject_send_right(ipc_kobject_type_t type);
 static struct ipc_port *kobject_port(ipc_kobject_type_t type);
 static mach_msg_return_t send(mach_msg_header_t *msg, mach_msg_size_t size,
-		ipc_side_t sender);
+		ipc_side_t sender, pid_t sender_pid);
 static mach_msg_return_t copyin(mach_msg_header_t *header, ipc_side_t sender,
 		struct ipc_port **dest);
 static mach_msg_return_t copyin_body(mach_msg_header_t *header,
@@ -159,7 +172,8 @@ static mach_msg_return_t receive(mach_msg_header_t *msg,
 static struct ipc_port *port_with_message(struct ipc_entry *entry);
 static int wait_for_arrival(mach_msg_option64_t options,
 		mach_msg_timeout_t timeout, struct timespec *deadline);
-static void write_trailer(mach_msg_header_t *msg, struct ipc_port *port);
+static void write_trailer(mach_msg_header_t *msg, struct ipc_port *port,
+		pid_t sender_pid);
 static void destroy_receive_right(struct ipc_entry *entry);
 static struct ipc_entry *lookup(mach_port_name_t name);
 static struct ipc_port *port_alloc(ipc_kobject_type_t kotype);
@@ -286,7 +300,8 @@ ipc_mach_msg(mach_msg_header_t *msg, mach_msg_option64_t options,
 		mach_port_name_t rcv_name, mach_msg_timeout_t timeout)
 {
 	if (options & MACH64_SEND_MSG) {
-		mach_msg_return_t mr = send(msg, send_size, IPC_USER);
+		mach_msg_return_t mr = send(msg, send_size, IPC_USER,
+				getpid());
 		if (mr != MACH_MSG_SUCCESS) {
 			return mr;
 		}
@@ -300,17 +315,20 @@ ipc_mach_msg(mach_msg_header_t *msg, mach_msg_option64_t options,
 }
 
 static mach_msg_return_t
-send(mach_msg_header_t *msg, mach_msg_size_t size, ipc_side_t sender)
+send(mach_msg_header_t *msg, mach_msg_size_t size, ipc_side_t sender,
+		pid_t sender_pid)
 {
 	struct ipc_kmsg *kmsg = malloc(
 			sizeof(*kmsg) + size + sizeof(mach_msg_max_trailer_t));
+	kmsg->sender_pid = sender_pid;
 	memcpy(kmsg->header, msg, size);
 	kmsg->header->msgh_size = size;
 
 	pthread_mutex_lock(&lock);
 	struct ipc_entry *remote_entry = lookup(kmsg->header->msgh_remote_port);
 	if (remote_entry != NULL && remote_entry->port->remote) {
-		mach_msg_return_t rr = remote_send(kmsg->header, size);
+		mach_msg_return_t rr = remote_send(kmsg->header, size,
+				sender_pid);
 		free(kmsg);
 		return rr;
 	}
@@ -331,10 +349,14 @@ send(mach_msg_header_t *msg, mach_msg_size_t size, ipc_side_t sender)
 		return MACH_MSG_SUCCESS;
 	}
 
-	write_trailer(kmsg->header, dest);
+	write_trailer(kmsg->header, dest, kmsg->sender_pid);
+	bool serve_xpc = dest->kotype == IPC_KOBJECT_BOOTSTRAP
+			&& xpc_bootstrap_is_message(kmsg->header->msgh_id);
 	pthread_mutex_unlock(&lock);
 
-	serve_kobject(kmsg->header);
+	if (!serve_xpc || !xpc_bootstrap_serve(kmsg->header)) {
+		serve_kobject(kmsg->header);
+	}
 
 	pthread_mutex_lock(&lock);
 	release_unused_entries(kmsg->header);
@@ -345,10 +367,14 @@ send(mach_msg_header_t *msg, mach_msg_size_t size, ipc_side_t sender)
 }
 
 static mach_msg_return_t
-remote_send(mach_msg_header_t *header, mach_msg_size_t size)
+remote_send(mach_msg_header_t *header, mach_msg_size_t size, pid_t sender_pid)
 {
 	uint64_t dest_global_id = lookup(header->msgh_remote_port)->port->global_id;
 	mach_msg_bits_t bits = header->msgh_bits;
+
+	uint64_t global_ids[16];
+	uint32_t descriptor_count = export_body_ports(header, global_ids,
+			broker_guest_of(dest_global_id));
 
 	struct remote_header rh = {
 		.message_size = size,
@@ -357,17 +383,76 @@ remote_send(mach_msg_header_t *header, mach_msg_size_t size)
 		.reply_global_id = (header->msgh_local_port != MACH_PORT_NULL)
 				? export_local_port(header->msgh_local_port)
 				: 0,
+		.sender_pid = sender_pid,
+		.descriptor_count = descriptor_count,
 	};
 
-	uint32_t blob_length = sizeof(rh) + size;
+	uint32_t ids_length = descriptor_count * sizeof(global_ids[0]);
+	uint32_t blob_length = sizeof(rh) + size + ids_length;
 	char *blob = malloc(blob_length);
 	memcpy(blob, &rh, sizeof(rh));
 	memcpy(blob + sizeof(rh), header, size);
+	memcpy(blob + sizeof(rh) + size, global_ids, ids_length);
 
 	pthread_mutex_unlock(&lock);
 	broker_client_send(dest_global_id, blob, blob_length);
 	free(blob);
 	return MACH_MSG_SUCCESS;
+}
+
+static uint32_t
+export_body_ports(mach_msg_header_t *header, uint64_t *global_ids,
+		uint32_t dest_guest_id)
+{
+	if (!(header->msgh_bits & MACH_MSGH_BITS_COMPLEX)) {
+		return 0;
+	}
+
+	mach_msg_body_t *body = (mach_msg_body_t *)(header + 1);
+	uint8_t *cursor = (uint8_t *)(body + 1);
+	uint32_t count = 0;
+	for (mach_msg_size_t i = 0; i < body->msgh_descriptor_count; i++) {
+		mach_msg_type_descriptor_t *descriptor
+				= (mach_msg_type_descriptor_t *)cursor;
+		if (descriptor->type == MACH_MSG_PORT_DESCRIPTOR) {
+			mach_msg_port_descriptor_t *d
+					= (mach_msg_port_descriptor_t *)cursor;
+			global_ids[count++] = export_body_port(d->name,
+					d->disposition, dest_guest_id);
+			cursor += sizeof(*d);
+		} else {
+			mach_msg_guarded_port_descriptor64_t *d
+					= (mach_msg_guarded_port_descriptor64_t *)
+							cursor;
+			global_ids[count++] = export_body_port(d->name,
+					d->disposition, dest_guest_id);
+			cursor += sizeof(*d);
+		}
+	}
+	return count;
+}
+
+static uint64_t
+export_body_port(mach_port_name_t name, mach_msg_type_name_t disposition,
+		uint32_t dest_guest_id)
+{
+	if (!MACH_PORT_VALID(name)) {
+		return 0;
+	}
+
+	if (disposition != MACH_MSG_TYPE_MOVE_RECEIVE) {
+		return export_local_port(name);
+	}
+
+	struct ipc_entry *entry = lookup(name);
+	entry->port->global_id = broker_global_id(dest_guest_id,
+			0x80000000 | ++transfer_counter);
+	entry->port->remote = true;
+	entry->type = MACH_PORT_TYPE_SEND;
+	if (entry->urefs == 0) {
+		entry->urefs = 1;
+	}
+	return entry->port->global_id;
 }
 
 static uint64_t
@@ -430,11 +515,15 @@ ipc_remote_deliver(uint64_t dest_global_id, const void *blob, uint32_t length)
 			= (const mach_msg_header_t *)((const char *)blob
 					+ sizeof(*rh));
 
+	const uint64_t *global_ids = (const uint64_t *)((const char *)message
+			+ rh->message_size);
+
 	pthread_mutex_lock(&lock);
 	struct ipc_port *dest = port_for_global_id(dest_global_id);
 
 	struct ipc_kmsg *kmsg = malloc(sizeof(*kmsg) + rh->message_size
 			+ sizeof(mach_msg_max_trailer_t));
+	kmsg->sender_pid = rh->sender_pid;
 	memcpy(kmsg->header, message, rh->message_size);
 
 	mach_port_name_t reply_name = (rh->reply_global_id != 0)
@@ -449,8 +538,58 @@ ipc_remote_deliver(uint64_t dest_global_id, const void *blob, uint32_t length)
 	kmsg->header->msgh_voucher_port = MACH_PORT_NULL;
 	kmsg->header->msgh_size = rh->message_size;
 
+	import_body_ports(kmsg->header, global_ids);
+
 	enqueue(dest, kmsg);
 	unlock_and_notify_arrival(dest);
+}
+
+static void
+import_body_ports(mach_msg_header_t *header, const uint64_t *global_ids)
+{
+	if (!(header->msgh_bits & MACH_MSGH_BITS_COMPLEX)) {
+		return;
+	}
+
+	mach_msg_body_t *body = (mach_msg_body_t *)(header + 1);
+	uint8_t *cursor = (uint8_t *)(body + 1);
+	uint32_t count = 0;
+	for (mach_msg_size_t i = 0; i < body->msgh_descriptor_count; i++) {
+		mach_msg_type_descriptor_t *descriptor
+				= (mach_msg_type_descriptor_t *)cursor;
+		if (descriptor->type == MACH_MSG_PORT_DESCRIPTOR) {
+			mach_msg_port_descriptor_t *d
+					= (mach_msg_port_descriptor_t *)cursor;
+			mach_msg_type_name_t type = received_type(d->disposition);
+			d->name = import_body_port(global_ids[count++], type);
+			d->disposition = type;
+			cursor += sizeof(*d);
+		} else {
+			mach_msg_guarded_port_descriptor64_t *d
+					= (mach_msg_guarded_port_descriptor64_t *)
+							cursor;
+			mach_msg_type_name_t type = received_type(d->disposition);
+			d->name = import_body_port(global_ids[count++], type);
+			d->disposition = type;
+			cursor += sizeof(*d);
+		}
+	}
+}
+
+static mach_port_name_t
+import_body_port(uint64_t global_id, mach_msg_type_name_t type)
+{
+	if (global_id == 0) {
+		return MACH_PORT_NULL;
+	}
+
+	if (type == MACH_MSG_TYPE_PORT_RECEIVE) {
+		struct ipc_entry *entry = entry_alloc(port_alloc(IPC_KOBJECT_NONE));
+		entry->type = MACH_PORT_TYPE_RECEIVE;
+		entry->port->global_id = global_id;
+		return entry->port->name;
+	}
+	return import_remote_send(global_id);
 }
 
 mach_port_name_t
@@ -473,6 +612,9 @@ mach_port_name_t
 ipc_service_look_up(const char *name)
 {
 	broker_client_ensure();
+	if (!broker_client_available()) {
+		return MACH_PORT_NULL;
+	}
 	uint64_t global_id;
 	if (!broker_client_look_up(name, &global_id)) {
 		return MACH_PORT_NULL;
@@ -816,7 +958,7 @@ serve_kobject(mach_msg_header_t *request)
 	}
 
 	if (reply->msgh_remote_port != MACH_PORT_NULL) {
-		send(reply, reply->msgh_size, IPC_KERNEL);
+		send(reply, reply->msgh_size, IPC_KERNEL, 0);
 	}
 	free(reply);
 }
@@ -917,7 +1059,7 @@ receive(mach_msg_header_t *msg, mach_msg_option64_t options,
 	}
 
 	port->messages = kmsg->next;
-	write_trailer(kmsg->header, port);
+	write_trailer(kmsg->header, port, kmsg->sender_pid);
 	pthread_mutex_unlock(&lock);
 
 	mach_msg_return_t mr = MACH_RCV_TOO_LARGE;
@@ -976,7 +1118,7 @@ wait_for_arrival(mach_msg_option64_t options, mach_msg_timeout_t timeout,
 }
 
 static void
-write_trailer(mach_msg_header_t *msg, struct ipc_port *port)
+write_trailer(mach_msg_header_t *msg, struct ipc_port *port, pid_t sender_pid)
 {
 	mach_msg_max_trailer_t *trailer
 			= (mach_msg_max_trailer_t *)((uint8_t *)msg
@@ -991,14 +1133,21 @@ write_trailer(mach_msg_header_t *msg, struct ipc_port *port)
 	trailer->msgh_audit.val[2] = getegid();
 	trailer->msgh_audit.val[3] = getuid();
 	trailer->msgh_audit.val[4] = getgid();
-	trailer->msgh_audit.val[5] = getpid();
+	trailer->msgh_audit.val[5] = sender_pid;
+	trailer->msgh_audit.val[7] = 10;
 	trailer->msgh_context = port->context;
 }
 
 mach_msg_return_t
 ipc_kernel_send(mach_msg_header_t *msg)
 {
-	return send(msg, msg->msgh_size, IPC_KERNEL);
+	return send(msg, msg->msgh_size, IPC_KERNEL, 0);
+}
+
+mach_msg_return_t
+ipc_launchd_send(mach_msg_header_t *msg)
+{
+	return send(msg, msg->msgh_size, IPC_KERNEL, 1);
 }
 
 kern_return_t
