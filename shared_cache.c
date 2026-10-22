@@ -97,6 +97,9 @@ static void rebase_page(dyld_cache_slide_info2_t *info, uint64_t address);
 static void rebase_page_v5(dyld_cache_slide_info5_t *info, uint64_t address);
 static uint64_t sign_pointer(uint64_t value, void *location, bool address_div,
 		uint16_t diversity, bool key_is_data);
+static void pac_key_fingerprint(uint64_t fingerprint[2]);
+static bool prepared_cache_matches_key(const dyld_cache_header_t *header);
+static int write_pac_fingerprint(const char *directory_host);
 static void patch_thread_self_reads(uint64_t address, uint64_t size);
 #endif
 static uint64_t trampolines_offset(const dyld_cache_header_t *header);
@@ -116,16 +119,16 @@ static int write_mappings(int f,
 		struct sidt_patches *patches);
 static int write_trampolines(int f, const dyld_cache_header_t *header,
 		const struct sidt_patches *patches);
+#ifdef __x86_64__
 static int patch_text(int f, const dyld_cache_mapping_and_slide_info_t *text,
 		const dyld_cache_header_t *main_header,
 		struct sidt_patches *patches);
-#ifdef __x86_64__
 static void find_patches(struct sidt_patches *patches,
 		const dyld_cache_mapping_and_slide_info_t *text,
 		const dyld_cache_header_t *main_header);
-#endif
 static int write_patches(int f, const struct sidt_patches *patches,
 		const dyld_cache_mapping_and_slide_info_t *text);
+#endif
 static int write_all(int f, const void *data, size_t size, uint64_t offset);
 
 int
@@ -165,7 +168,11 @@ shared_cache_mmap(void)
 	char prepared_path[PATH_MAX], prepared_buffer[PATH_MAX];
 	const char *prepared_host_path = prepared_cache_path(&header,
 			strrchr(path, '/') + 1, prepared_path, prepared_buffer);
-	if (map_cache(prepared_host_path, &header, true) != 0) {
+	bool usable = true;
+#ifndef __x86_64__
+	usable = prepared_cache_matches_key(&header);
+#endif
+	if (!usable || map_cache(prepared_host_path, &header, true) != 0) {
 		if (map_cache(host_path, &header, false)) {
 			goto error;
 		}
@@ -226,9 +233,6 @@ map_cache(const char *path, dyld_cache_header_t *header, bool prepared)
 static void
 prepare_cache(const char *path, dyld_cache_header_t *header)
 {
-#ifndef __x86_64__
-	return;
-#endif
 	char directory[PREPARED_DIRECTORY_SIZE];
 	char lock_path[PATH_MAX], buffer[PATH_MAX];
 	prepared_cache_directory(header, directory);
@@ -302,6 +306,26 @@ prepared_cache_directory(const dyld_cache_header_t *header, char *buffer)
 			u[9], u[10], u[11], u[12], u[13], u[14], u[15], suffix);
 }
 
+#ifndef __x86_64__
+static bool
+prepared_cache_matches_key(const dyld_cache_header_t *header)
+{
+	char directory[PREPARED_DIRECTORY_SIZE], path[PATH_MAX], buffer[PATH_MAX];
+	prepared_cache_directory(header, directory);
+	snprintf(path, sizeof(path), "%s/pac-key", directory);
+	int f = open(sysroot_host_path(path, 0, buffer), O_RDONLY | O_CLOEXEC);
+	if (f == -1) {
+		return false;
+	}
+	uint64_t stored[2], current[2];
+	pac_key_fingerprint(current);
+	bool match = read(f, stored, sizeof(stored)) == (ssize_t)sizeof(stored)
+			&& stored[0] == current[0] && stored[1] == current[1];
+	close(f);
+	return match;
+}
+#endif
+
 static int
 map_cache_file(int f, dyld_cache_header_t *header, bool prepared)
 {
@@ -349,19 +373,44 @@ prepare_cache_locked(const char *path, const char *directory,
 			sysroot_host_path(staging, 0, buffer));
 
 	remove_directory(staging_host);
-	if (mkdir(staging_host, 0755) == 0
-			&& prepare_cache_directory(path, staging_host, header)
-					== 0) {
-		rename(staging_host, final_host);
+	if (mkdir(staging_host, 0755) != 0
+			|| prepare_cache_directory(path, staging_host, header)
+					!= 0) {
+		return;
 	}
+#ifndef __x86_64__
+	if (write_pac_fingerprint(staging_host) != 0) {
+		return;
+	}
+#endif
+	rename(staging_host, final_host);
 }
+
+#ifndef __x86_64__
+static int
+write_pac_fingerprint(const char *directory_host)
+{
+	char path[PATH_MAX];
+	snprintf(path, sizeof(path), "%s/pac-key", directory_host);
+	int f = open(path, O_CREAT | O_WRONLY | O_CLOEXEC, 0644);
+	if (f == -1) {
+		return 1;
+	}
+	uint64_t fingerprint[2];
+	pac_key_fingerprint(fingerprint);
+	int result = write(f, fingerprint, sizeof(fingerprint))
+			!= (ssize_t)sizeof(fingerprint);
+	close(f);
+	return result;
+}
+#endif
 
 static int
 map_cache_mapping(int f, dyld_cache_mapping_and_slide_info_t *m, bool prepared)
 {
 	if (prepared || m->slideInfoFileSize == 0) {
 #ifndef __x86_64__
-		if (m->initProt & VM_PROT_EXECUTE) {
+		if (!prepared && (m->initProt & VM_PROT_EXECUTE)) {
 			void *base = mmap((void *)m->address, m->size,
 					PROT_READ | PROT_WRITE,
 					MAP_PRIVATE | MAP_FIXED, f, m->fileOffset);
@@ -639,6 +688,13 @@ sign_pointer(uint64_t value, void *location, bool address_div,
 	return value;
 }
 
+static void
+pac_key_fingerprint(uint64_t fingerprint[2])
+{
+	fingerprint[0] = sign_pointer(0x1000, NULL, false, 0, false);
+	fingerprint[1] = sign_pointer(0x1000, NULL, false, 0, true);
+}
+
 #define MRS_TPIDRRO_EL0 0xd53bd060
 #define MRS_TPIDR_EL0   0xd53bd040
 #define MRS_REGISTER    0x0000001f
@@ -776,9 +832,16 @@ write_mappings(int f, const dyld_cache_mapping_and_slide_info_t *mappings,
 				return 1;
 			}
 		} else if (m->initProt & VM_PROT_EXECUTE) {
+#ifdef __x86_64__
 			if (patch_text(f, m, main_header, patches)) {
 				return 1;
 			}
+#else
+			if (write_all(f, (const void *)m->address, m->size,
+					    m->fileOffset)) {
+				return 1;
+			}
+#endif
 		}
 	}
 	return 0;
@@ -803,6 +866,7 @@ write_trampolines(int f, const dyld_cache_header_t *header,
 			|| ftruncate(f, offset + PAGE_SIZE + t.size);
 }
 
+#ifdef __x86_64__
 static int
 patch_text(int f, const dyld_cache_mapping_and_slide_info_t *text,
 		const dyld_cache_header_t *main_header,
@@ -811,15 +875,12 @@ patch_text(int f, const dyld_cache_mapping_and_slide_info_t *text,
 	sidt_patches_init(patches,
 			(text->address + text->size + PAGE_SIZE - 1)
 					& ~(uint64_t)(PAGE_SIZE - 1));
-#ifdef __x86_64__
 	if (__builtin_cpu_supports("rdpid")) {
 		find_patches(patches, text, main_header);
 	}
-#endif
 	return write_patches(f, patches, text);
 }
 
-#ifdef __x86_64__
 static void
 find_patches(struct sidt_patches *patches,
 		const dyld_cache_mapping_and_slide_info_t *text,
@@ -836,7 +897,6 @@ find_patches(struct sidt_patches *patches,
 		}
 	}
 }
-#endif
 
 static int
 write_patches(int f, const struct sidt_patches *patches,
@@ -852,6 +912,7 @@ write_patches(int f, const struct sidt_patches *patches,
 	}
 	return 0;
 }
+#endif
 
 static int
 write_all(int f, const void *data, size_t size, uint64_t offset)
