@@ -1731,7 +1731,7 @@ sys_kdebug_trace(uint32_t code, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 	fprintf(stderr, "kdebug_trace(%p, %p, %p, %p, %p)\n", (void *)code,
 			(void *)arg1, (void *)arg2, (void *)arg3, (void *)arg4);
 #endif
-	unimplemented();
+	return 0;
 }
 
 int
