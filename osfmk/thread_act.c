@@ -247,7 +247,7 @@ _kernelrpc_thread_policy(thread_act_t thr_act, policy_t policy,
 			(void *)thr_act, (void *)policy, (void *)base,
 			(void *)baseCnt, (void *)set_limit);
 #endif
-	unimplemented();
+	return KERN_SUCCESS;
 }
 
 kern_return_t
