@@ -85,12 +85,7 @@ map_anonymous(mach_vm_address_t *address, mach_vm_size_t size,
 static void *
 map_aligned(mach_vm_size_t size, mach_vm_offset_t mask, vm_prot_t protection)
 {
-	if (mask == PAGE_MASK) {
-		return mmap(NULL, size, protection, MAP_PRIVATE | MAP_ANON, -1,
-				0);
-	}
-
-	mach_vm_size_t padded_size = size + mask + 1 - PAGE_SIZE;
+	mach_vm_size_t padded_size = size + mask + 1;
 	uint8_t *padded = mmap(NULL, padded_size, protection,
 			MAP_PRIVATE | MAP_ANON, -1, 0);
 	if (padded == MAP_FAILED) {
@@ -99,11 +94,12 @@ map_aligned(mach_vm_size_t size, mach_vm_offset_t mask, vm_prot_t protection)
 
 	uint8_t *base = (uint8_t *)(((uintptr_t)padded + mask) & ~mask);
 	uint8_t *end = base + size;
+	uint8_t *padded_end = padded + padded_size;
 	if (base != padded) {
 		munmap(padded, base - padded);
 	}
-	if (end != padded + padded_size) {
-		munmap(end, padded + padded_size - end);
+	if (end != padded_end) {
+		munmap(end, padded_end - end);
 	}
 	return base;
 }

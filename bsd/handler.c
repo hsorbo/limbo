@@ -1693,6 +1693,34 @@ sys_setrlimit(uint32_t which, void *rlp)
 	return errno_map(setrlimit(resource, &limit));
 }
 
+#ifndef __x86_64__
+static void *
+map_page_aligned(size_t len, int prot, int tflags, int fd, off_t pos)
+{
+	size_t span = ((len + PAGE_MASK) & ~(size_t)PAGE_MASK) + PAGE_SIZE;
+	uint8_t *region = mmap(
+			NULL, span, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (region == MAP_FAILED) {
+		return MAP_FAILED;
+	}
+
+	uint8_t *base = (uint8_t *)(((uintptr_t)region + PAGE_MASK)
+			& ~(uintptr_t)PAGE_MASK);
+	void *mapped = mmap(base, len, prot, tflags | MAP_FIXED, fd, pos);
+	if (mapped == MAP_FAILED) {
+		munmap(region, span);
+		return MAP_FAILED;
+	}
+
+	if (base != region) {
+		munmap(region, base - region);
+	}
+	uint8_t *tail = base + (span - PAGE_SIZE);
+	munmap(tail, region + span - tail);
+	return mapped;
+}
+#endif
+
 user_addr_t
 sys_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t pos)
 {
@@ -1712,7 +1740,16 @@ sys_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t pos)
 		tflags |= MAP_ANON;
 
 	/* TODO: Be responsible and convert the protection properly */
-	void *r = mmap(addr, len, prot, tflags, fd, pos);
+	void *r;
+#ifdef __x86_64__
+	r = mmap(addr, len, prot, tflags, fd, pos);
+#else
+	if (tflags & MAP_FIXED) {
+		r = mmap(addr, len, prot, tflags, fd, pos);
+	} else {
+		r = map_page_aligned(len, prot, tflags, fd, pos);
+	}
+#endif
 	if (r == MAP_FAILED) {
 #ifdef ENABLE_STRACE
 		perror("mmap");
