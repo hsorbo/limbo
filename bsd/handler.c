@@ -3765,7 +3765,7 @@ sys_persona(uint32_t operation, uint32_t flags, void *info, void *id,
 			(void *)flags, (void *)info, (void *)id, (void *)idlen,
 			(void *)path);
 #endif
-	unimplemented();
+	return _ESRCH;
 }
 
 uint64_t
