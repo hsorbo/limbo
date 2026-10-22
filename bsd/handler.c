@@ -4050,7 +4050,7 @@ sys_proc_info_extended_id(int32_t callnum, int32_t pid, uint32_t flavor,
 			(void *)flags, (void *)ext_id, (void *)arg,
 			(void *)buffer, (void *)buffersize);
 #endif
-	unimplemented();
+	return sys_proc_info(callnum, pid, flavor, arg, buffer, buffersize);
 }
 
 uint64_t
