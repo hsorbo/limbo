@@ -153,7 +153,7 @@ void
 thread_enter(const struct thread_state *state)
 {
 	if (state->tpidr != 0) {
-		asm volatile("msr tpidrro_el0, %0" ::"r"(state->tpidr));
+		asm volatile("msr tpidr_el0, %0" ::"r"(state->tpidr));
 	}
 
 	/* Pin the base to x16: the general-register loads below overwrite

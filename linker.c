@@ -97,6 +97,7 @@ linker_link(const char *path, const char **dylinker_path, uintptr_t *entry)
 	/* TODO: This code is sketchy, but since it is used during start up
 	 * it should not race and lose */
 	if (base_address == 0) {
+#ifdef __x86_64__
 		void *landing = mmap(NULL, 0x1000000, PROT_READ,
 				MAP_PRIVATE | MAP_ANON | MAP_32BIT, -1, 0);
 		if (landing == MAP_FAILED) {
@@ -104,6 +105,28 @@ linker_link(const char *path, const char **dylinker_path, uintptr_t *entry)
 		}
 		munmap(landing, 0x1000000);
 		base_address = (uintptr_t)landing;
+#else
+		for (uintptr_t candidate = 0x10000000;
+				candidate < 0x80000000;
+				candidate += 0x1000000) {
+			void *landing = mmap((void *)candidate, 0x1000000,
+					PROT_READ,
+					MAP_PRIVATE | MAP_ANON
+							| MAP_FIXED_NOREPLACE,
+					-1, 0);
+			if (landing == (void *)candidate) {
+				munmap(landing, 0x1000000);
+				base_address = candidate;
+				break;
+			}
+			if (landing != MAP_FAILED) {
+				munmap(landing, 0x1000000);
+			}
+		}
+		if (base_address == 0) {
+			goto error;
+		}
+#endif
 	}
 	uintptr_t start = 0;
 

@@ -163,6 +163,28 @@ typedef struct {
 	uint64_t value_add;
 } dyld_cache_slide_info2_t;
 
+#define DYLD_CACHE_SLIDE_V5_PAGE_ATTR_NO_REBASE 0xffff
+
+typedef struct {
+	uint32_t version;
+	uint32_t page_size;
+	uint32_t page_starts_count;
+	uint64_t value_add;
+	uint16_t page_starts[];
+} dyld_cache_slide_info5_t;
+
+typedef union {
+	uint64_t raw;
+	struct {
+		uint64_t runtimeOffset : 34, high8 : 8, unused : 10, next : 11,
+				auth : 1;
+	} regular;
+	struct {
+		uint64_t runtimeOffset : 34, diversity : 16, addrDiv : 1,
+				keyIsData : 1, next : 11, auth : 1;
+	} auth;
+} dyld_cache_slide_pointer5_t;
+
 extern void *shared_cache_start;
 extern int shared_cache_cpu_subtype;
 

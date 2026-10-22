@@ -93,6 +93,11 @@ static void remove_directory(const char *path);
 static int prepare_cache_directory(const char *source, const char *directory,
 		const dyld_cache_header_t *header);
 static void rebase_page(dyld_cache_slide_info2_t *info, uint64_t address);
+#ifndef __x86_64__
+static void rebase_page_v5(dyld_cache_slide_info5_t *info, uint64_t address);
+static uint64_t sign_pointer(uint64_t value, void *location, bool address_div,
+		uint16_t diversity, bool key_is_data);
+#endif
 static uint64_t trampolines_offset(const dyld_cache_header_t *header);
 static int prepare_subcache(const char *source, const char *destination,
 		const dyld_subcache_entry_t *entry,
@@ -113,9 +118,11 @@ static int write_trampolines(int f, const dyld_cache_header_t *header,
 static int patch_text(int f, const dyld_cache_mapping_and_slide_info_t *text,
 		const dyld_cache_header_t *main_header,
 		struct sidt_patches *patches);
+#ifdef __x86_64__
 static void find_patches(struct sidt_patches *patches,
 		const dyld_cache_mapping_and_slide_info_t *text,
 		const dyld_cache_header_t *main_header);
+#endif
 static int write_patches(int f, const struct sidt_patches *patches,
 		const dyld_cache_mapping_and_slide_info_t *text);
 static int write_all(int f, const void *data, size_t size, uint64_t offset);
@@ -124,6 +131,7 @@ int
 shared_cache_mmap(void)
 {
 	char buffer[PATH_MAX];
+#ifdef __x86_64__
 	const char *path = "/System/Library/dyld/dyld_shared_cache_x86_64";
 	const char *host_path = sysroot_host_path(path, 0, buffer);
 	if (access(host_path, F_OK) != 0) {
@@ -131,6 +139,11 @@ shared_cache_mmap(void)
 		host_path = sysroot_host_path(path, 0, buffer);
 		shared_cache_cpu_subtype = CPU_SUBTYPE_X86_64_H;
 	}
+#else
+	const char *path = "/System/Library/dyld/dyld_shared_cache_arm64e";
+	const char *host_path = sysroot_host_path(path, 0, buffer);
+	shared_cache_cpu_subtype = CPU_SUBTYPE_ARM64E;
+#endif
 
 	int f = open(host_path, O_RDONLY);
 	if (f == -1) {
@@ -212,6 +225,9 @@ map_cache(const char *path, dyld_cache_header_t *header, bool prepared)
 static void
 prepare_cache(const char *path, dyld_cache_header_t *header)
 {
+#ifndef __x86_64__
+	return;
+#endif
 	char directory[PREPARED_DIRECTORY_SIZE];
 	char lock_path[PATH_MAX], buffer[PATH_MAX];
 	prepared_cache_directory(header, directory);
@@ -359,7 +375,7 @@ map_cache_mapping(int f, dyld_cache_mapping_and_slide_info_t *m, bool prepared)
 		return 1;
 	}
 
-	dyld_cache_slide_info2_t *info = malloc(m->slideInfoFileSize);
+	void *info = malloc(m->slideInfoFileSize);
 	ssize_t size = m->slideInfoFileSize;
 	if (pread(f, info, size, m->slideInfoFileOffset) != size) {
 		perror("pread");
@@ -367,11 +383,24 @@ map_cache_mapping(int f, dyld_cache_mapping_and_slide_info_t *m, bool prepared)
 		return 1;
 	}
 
-	assert(info->version == 2);
-	assert(info->page_size == 0x1000);
-	assert(info->delta_mask == 0x00ffff0000000000);
-	assert(info->page_starts_count == m->size / info->page_size);
-	rebase_page(info, m->address);
+	uint32_t version = *(uint32_t *)info;
+	if (version == 2) {
+		dyld_cache_slide_info2_t *info2 = info;
+		assert(info2->page_size == 0x1000);
+		assert(info2->delta_mask == 0x00ffff0000000000);
+		assert(info2->page_starts_count == m->size / info2->page_size);
+		rebase_page(info2, m->address);
+	}
+#ifndef __x86_64__
+	else if (version == 5) {
+		rebase_page_v5(info, m->address);
+	}
+#endif
+	else {
+		fprintf(stderr, "limbo: unsupported slide info v%u\n", version);
+		free(info);
+		return 1;
+	}
 	free(info);
 
 	if (mprotect(base, m->size, m->initProt) == -1) {
@@ -537,6 +566,62 @@ rebase_page(dyld_cache_slide_info2_t *info, uint64_t address)
 	}
 }
 
+#ifndef __x86_64__
+static void
+rebase_page_v5(dyld_cache_slide_info5_t *info, uint64_t address)
+{
+	for (uint32_t i = 0; i < info->page_starts_count; i++) {
+		uint16_t start = info->page_starts[i];
+		if (start == DYLD_CACHE_SLIDE_V5_PAGE_ATTR_NO_REBASE) {
+			continue;
+		}
+
+		uint8_t *page = (uint8_t *)(address + (uint64_t)i
+						    * info->page_size);
+		uint32_t offset = start;
+		uint32_t delta;
+		do {
+			dyld_cache_slide_pointer5_t *location
+					= (void *)(page + offset);
+			dyld_cache_slide_pointer5_t p = *location;
+			uint64_t target = info->value_add
+					+ p.regular.runtimeOffset;
+
+			if (p.auth.auth) {
+				location->raw = sign_pointer(target, location,
+						p.auth.addrDiv, p.auth.diversity,
+						p.auth.keyIsData);
+			} else {
+				location->raw = target
+						| ((uint64_t)p.regular.high8
+								<< 56);
+			}
+
+			delta = p.regular.next;
+			offset += delta * sizeof(uint64_t);
+		} while (delta != 0);
+	}
+}
+
+static uint64_t
+sign_pointer(uint64_t value, void *location, bool address_div,
+		uint16_t diversity, bool key_is_data)
+{
+	uint64_t modifier = diversity;
+	if (address_div) {
+		modifier = ((uint64_t)location & 0x0000ffffffffffffULL)
+				| ((uint64_t)diversity << 48);
+	}
+
+	if (key_is_data) {
+		asm("pacda %0, %1" : "+r"(value) : "r"(modifier));
+	} else {
+		asm("pacia %0, %1" : "+r"(value) : "r"(modifier));
+	}
+	return value;
+}
+#endif
+
 static uint64_t
 trampolines_offset(const dyld_cache_header_t *header)
 {
@@ -698,6 +783,7 @@ patch_text(int f, const dyld_cache_mapping_and_slide_info_t *text,
 	return write_patches(f, patches, text);
 }
 
+#ifdef __x86_64__
 static void
 find_patches(struct sidt_patches *patches,
 		const dyld_cache_mapping_and_slide_info_t *text,
@@ -714,6 +800,7 @@ find_patches(struct sidt_patches *patches,
 		}
 	}
 }
+#endif
 
 static int
 write_patches(int f, const struct sidt_patches *patches,

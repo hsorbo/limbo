@@ -29,6 +29,8 @@ add_project_arguments(
 host_cpu = host_machine.cpu_family()
 if host_cpu == 'aarch64'
   add_project_arguments('-D__arm64__', language: 'c')
+  # Pointer authentication (pacia/pacda) is needed to sign arm64e cache pointers
+  add_project_arguments('-march=armv8.3-a', language: 'c')
 endif
 
 include_dir = [
