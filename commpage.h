@@ -32,8 +32,13 @@
 
 typedef void *user_addr_t;
 
+#ifdef __x86_64__
 static const uintptr_t _COMM_PAGE_START_ADDRESS = 0x7fffffe00000ULL;
 static const size_t _COMM_PAGE_AREA_LENGTH = 0x1000;
+#else
+static const uintptr_t _COMM_PAGE_START_ADDRESS = 0xfffffc000ULL;
+static const size_t _COMM_PAGE_AREA_LENGTH = 0x4000;
+#endif
 
 /* See the cpu_capabilities.h header for i386 */
 
