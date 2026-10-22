@@ -903,6 +903,12 @@ sys_mprotect(void *addr, size_t len, int prot)
 	return errno_map(mprotect(addr, len, prot));
 }
 
+#define _MADV_NORMAL     0
+#define _MADV_RANDOM     1
+#define _MADV_SEQUENTIAL 2
+#define _MADV_WILLNEED   3
+#define _MADV_ZERO       11
+
 int
 sys_madvise(void *addr, size_t len, int behav)
 {
@@ -910,8 +916,19 @@ sys_madvise(void *addr, size_t len, int behav)
 	fprintf(stderr, "madvise(%p, %p, %p)\n", (void *)addr, (void *)len,
 			(void *)behav);
 #endif
-	/* TODO: Handle */
-	return 0;
+	switch (behav) {
+	case _MADV_NORMAL:
+	case _MADV_RANDOM:
+	case _MADV_SEQUENTIAL:
+	case _MADV_WILLNEED:
+		madvise(addr, len, behav);
+		return 0;
+	case _MADV_ZERO:
+		memset(addr, 0, len);
+		return 0;
+	default:
+		return 0;
+	}
 }
 
 int
