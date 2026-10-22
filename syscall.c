@@ -62,18 +62,14 @@ static __thread bool rdx_pending;
 static __thread uint64_t rdx_value;
 #else
 #define PSTATE_C (1u << 29)
+static void dispatch_syscall(mcontext_t *mc);
 static void set_bsd_result(mcontext_t *mc, int64_t result);
+static uint64_t host_thread_pointer;
 static __thread bool x1_pending;
 static __thread uint64_t x1_value;
 #endif
 
 #ifndef __x86_64__
-/*
- * The signal return path runs a trampoline that issues rt_sigreturn. Linux
- * (and qemu-user) place their trampoline outside our binary, so its system
- * call would itself trap under syscall-user-dispatch and recurse. Supply our
- * own restorer inside the allowed region so the sigreturn is let through.
- */
 #ifndef SA_RESTORER
 #define SA_RESTORER 0x04000000
 #endif
@@ -103,6 +99,9 @@ syscall_handler_install(void)
 		perror("sigaction");
 		return 1;
 	}
+#ifndef __x86_64__
+	asm volatile("mrs %0, tpidr_el0" : "=r"(host_thread_pointer));
+#endif
 	return 0;
 }
 
@@ -182,18 +181,22 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 	}
 }
 #else /* __arm64__ */
-static void
+__attribute__((no_stack_protector)) static void
 handle_syscall(int sig, siginfo_t *info, void *ucontext)
 {
-	ucontext_t *context = (ucontext_t *)ucontext;
-	mcontext_t *mc = &context->uc_mcontext;
-	unsigned long long *regs = mc->regs;
+	uint64_t guest_thread_pointer;
+	asm volatile("mrs %0, tpidr_el0" : "=r"(guest_thread_pointer));
+	asm volatile("msr tpidr_el0, %0" ::"r"(host_thread_pointer));
 
-	/*
-	 * Darwin arm64 passes arguments in x0-x5 and the class-encoded system
-	 * call number in x16; the result returns in x0, with the carry flag
-	 * signalling a BSD error. TODO: verify the x16 encoding for Mach traps.
-	 */
+	dispatch_syscall(&((ucontext_t *)ucontext)->uc_mcontext);
+
+	asm volatile("msr tpidr_el0, %0" ::"r"(guest_thread_pointer));
+}
+
+static void
+dispatch_syscall(mcontext_t *mc)
+{
+	unsigned long long *regs = mc->regs;
 	uint64_t arg1 = regs[0];
 	uint64_t arg2 = regs[1];
 	uint64_t arg3 = regs[2];
@@ -202,11 +205,6 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 	uint64_t arg6 = regs[5];
 	uint64_t *sp = (uint64_t *)mc->sp;
 
-	/*
-	 * Darwin arm64 does not class-shift the number like x86-64: a Mach
-	 * trap is the negated trap number in x16, a Unix/BSD call is the bare
-	 * positive number. TODO: machine-dependent calls.
-	 */
 	int64_t number = (int64_t)regs[16];
 	if (number < 0) {
 		regs[0] = sys_osfmk((unsigned long)-number, arg1, arg2, arg3,
