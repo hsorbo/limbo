@@ -66,6 +66,12 @@ static bool contains(const struct mwl_region *regions, uint32_t region_count,
 		uint64_t address);
 static void apply_chain(uint8_t *location, const struct mwl_info_hdr *info,
 		const uint64_t *binds);
+#ifndef __x86_64__
+static void apply_chain_arm64e(uint8_t *location,
+		const struct mwl_info_hdr *info, const uint64_t *binds);
+static uint64_t sign_pointer(uint64_t value, void *location, bool address_div,
+		uint16_t diversity, uint32_t key);
+#endif
 
 int
 sys_map_with_linking_np(user_addr_t regions, uint32_t region_count,
@@ -152,6 +158,14 @@ static void
 apply_chain(uint8_t *location, const struct mwl_info_hdr *info,
 		const uint64_t *binds)
 {
+#ifndef __x86_64__
+	if (info->mwli_pointer_format != DYLD_CHAINED_PTR_64
+			&& info->mwli_pointer_format
+					!= DYLD_CHAINED_PTR_64_OFFSET) {
+		apply_chain_arm64e(location, info, binds);
+		return;
+	}
+#endif
 	while (true) {
 		union {
 			uint64_t raw;
@@ -181,3 +195,93 @@ apply_chain(uint8_t *location, const struct mwl_info_hdr *info,
 		location += fixup.rebase.next * 4;
 	}
 }
+
+#ifndef __x86_64__
+static void
+apply_chain_arm64e(uint8_t *location, const struct mwl_info_hdr *info,
+		const uint64_t *binds)
+{
+	uint16_t format = info->mwli_pointer_format;
+	uint32_t stride = (format == DYLD_CHAINED_PTR_ARM64E_KERNEL
+					  || format == DYLD_CHAINED_PTR_ARM64E_FIRMWARE)
+			? 4
+			: 8;
+
+	while (true) {
+		union {
+			uint64_t raw;
+			struct dyld_chained_ptr_arm64e_rebase rebase;
+			struct dyld_chained_ptr_arm64e_auth_rebase auth_rebase;
+			struct dyld_chained_ptr_arm64e_bind24 bind;
+			struct dyld_chained_ptr_arm64e_auth_bind24 auth_bind;
+		} fixup;
+		memcpy(&fixup.raw, location, sizeof(fixup.raw));
+
+		uint64_t value;
+		if (fixup.rebase.bind) {
+			uint64_t target = binds[fixup.bind.ordinal];
+			if (fixup.rebase.auth) {
+				value = sign_pointer(target, location,
+						fixup.auth_bind.addrDiv,
+						fixup.auth_bind.diversity,
+						fixup.auth_bind.key);
+			} else {
+				int64_t addend = fixup.bind.addend;
+				if (addend & (1 << 18)) {
+					addend |= ~(((int64_t)1 << 19) - 1);
+				}
+				value = target + addend;
+			}
+		} else if (fixup.rebase.auth) {
+			uint64_t target = info->mwli_image_address
+					+ fixup.auth_rebase.target;
+			value = sign_pointer(target, location,
+					fixup.auth_rebase.addrDiv,
+					fixup.auth_rebase.diversity,
+					fixup.auth_rebase.key);
+		} else {
+			uint64_t target = fixup.rebase.target;
+			if (format == DYLD_CHAINED_PTR_ARM64E
+					|| format == DYLD_CHAINED_PTR_ARM64E_FIRMWARE) {
+				target += info->mwli_slide;
+			} else {
+				target += info->mwli_image_address;
+			}
+			value = target | ((uint64_t)fixup.rebase.high8 << 56);
+		}
+		memcpy(location, &value, sizeof(value));
+
+		if (fixup.rebase.next == 0) {
+			break;
+		}
+		location += fixup.rebase.next * stride;
+	}
+}
+
+static uint64_t
+sign_pointer(uint64_t value, void *location, bool address_div,
+		uint16_t diversity, uint32_t key)
+{
+	uint64_t modifier = diversity;
+	if (address_div) {
+		modifier = ((uint64_t)location & 0x0000ffffffffffffULL)
+				| ((uint64_t)diversity << 48);
+	}
+
+	switch (key) {
+	case 0:
+		asm("pacia %0, %1" : "+r"(value) : "r"(modifier));
+		break;
+	case 1:
+		asm("pacib %0, %1" : "+r"(value) : "r"(modifier));
+		break;
+	case 2:
+		asm("pacda %0, %1" : "+r"(value) : "r"(modifier));
+		break;
+	case 3:
+		asm("pacdb %0, %1" : "+r"(value) : "r"(modifier));
+		break;
+	}
+	return value;
+}
+#endif
