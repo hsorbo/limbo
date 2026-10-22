@@ -385,7 +385,7 @@ mach_port_insert_member(
 	fprintf(stderr, "mach_port_insert_member(%p, %p, %p)\n", (void *)task,
 			(void *)name, (void *)pset);
 #endif
-	return ipc_port_move_member(name, pset);
+	return ipc_port_insert_member(name, pset);
 }
 
 kern_return_t
@@ -396,7 +396,7 @@ mach_port_extract_member(
 	fprintf(stderr, "mach_port_extract_member(%p, %p, %p)\n", (void *)task,
 			(void *)name, (void *)pset);
 #endif
-	return ipc_port_move_member(name, MACH_PORT_NULL);
+	return ipc_port_extract_member(name, pset);
 }
 
 kern_return_t

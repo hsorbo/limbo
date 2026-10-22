@@ -454,7 +454,7 @@ sys__kernelrpc_mach_port_insert_member_trap(mach_port_name_t target,
 	fprintf(stderr, "_kernelrpc_mach_port_insert_member_trap(%p, %p, %p)\n",
 			(void *)target, (void *)name, (void *)pset);
 #endif
-	return ipc_port_move_member(name, pset);
+	return ipc_port_insert_member(name, pset);
 }
 
 kern_return_t
@@ -467,7 +467,7 @@ sys__kernelrpc_mach_port_extract_member_trap(mach_port_name_t target,
 			"%p)\n",
 			(void *)target, (void *)name, (void *)pset);
 #endif
-	return ipc_port_move_member(name, MACH_PORT_NULL);
+	return ipc_port_extract_member(name, pset);
 }
 
 kern_return_t
