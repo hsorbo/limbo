@@ -92,6 +92,8 @@ static int
 quarantine_handle_syscall(int call)
 {
 	switch (call) {
+	case 80:
+	case 81:
 	case 82:
 	case 87:
 	case 180:

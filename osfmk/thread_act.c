@@ -182,7 +182,38 @@ thread_info(thread_inspect_t target_act, thread_flavor_t flavor,
 			(void *)flavor, (void *)thread_info_out,
 			(void *)thread_info_outCnt);
 #endif
-	unimplemented();
+	switch (flavor) {
+	case THREAD_BASIC_INFO: {
+		if (*thread_info_outCnt < THREAD_BASIC_INFO_COUNT) {
+			return KERN_INVALID_ARGUMENT;
+		}
+		thread_basic_info_t info = (thread_basic_info_t)thread_info_out;
+		*info = (thread_basic_info_data_t){
+				.policy = POLICY_TIMESHARE,
+				.run_state = TH_STATE_RUNNING,
+		};
+		*thread_info_outCnt = THREAD_BASIC_INFO_COUNT;
+		return KERN_SUCCESS;
+	}
+	case THREAD_EXTENDED_INFO: {
+		if (*thread_info_outCnt < THREAD_EXTENDED_INFO_COUNT) {
+			return KERN_INVALID_ARGUMENT;
+		}
+		thread_extended_info_t info
+				= (thread_extended_info_t)thread_info_out;
+		*info = (thread_extended_info_data_t){
+				.pth_policy = POLICY_TIMESHARE,
+				.pth_run_state = TH_STATE_RUNNING,
+				.pth_curpri = 31,
+				.pth_priority = 31,
+				.pth_maxpriority = 63,
+		};
+		*thread_info_outCnt = THREAD_EXTENDED_INFO_COUNT;
+		return KERN_SUCCESS;
+	}
+	default:
+		unimplemented();
+	}
 }
 
 kern_return_t

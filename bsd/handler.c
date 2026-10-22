@@ -1661,7 +1661,7 @@ sys_quotactl(const char *path, int cmd, int uid, void *arg)
 	fprintf(stderr, "quotactl(%p, %p, %p, %p)\n", (void *)path, (void *)cmd,
 			(void *)uid, (void *)arg);
 #endif
-	unimplemented();
+	return _ENOTSUP;
 }
 
 int
