@@ -39,6 +39,7 @@
 
 #define PROC_INFO_CALL_PIDINFO         0x2
 #define PROC_INFO_CALL_SETCONTROL      0x5
+#define PROC_INFO_CALL_DIRTYCONTROL    0x8
 #define PROC_INFO_CALL_SET_DYLD_IMAGES 0xf
 
 #define PROC_SELFSET_THREADNAME 2
@@ -122,6 +123,8 @@ sys_proc_info(int32_t callnum, int32_t pid, uint32_t flavor, uint64_t arg,
 	case PROC_INFO_CALL_SET_DYLD_IMAGES:
 		task_set_dyld_all_image_info(
 				(mach_vm_address_t)buffer, buffersize);
+		return 0;
+	case PROC_INFO_CALL_DIRTYCONTROL:
 		return 0;
 	default:
 		unimplemented();
