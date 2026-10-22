@@ -26,8 +26,12 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <fcntl.h>
+#include <limits.h>
 #include <mach/mach.h>
+#include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
 #include <unistd.h>
@@ -35,6 +39,7 @@
 #include "handler.h"
 #include "osfmk/task.h"
 #include "process.h"
+#include "sysroot.h"
 #include "xnu-errno.h"
 
 #define PROC_INFO_CALL_PIDINFO         0x2
@@ -103,8 +108,11 @@ struct proc_bsdinfo {
 	uint64_t pbi_start_tvusec;
 };
 
+#define PROC_PIDPATHINFO 11
+
 static int pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer,
 		int32_t buffersize);
+static bool executable_path(int32_t pid, char *path);
 static int setcontrol(uint32_t flavor, user_addr_t buffer, int32_t buffersize);
 
 int
@@ -196,6 +204,19 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 		info->p_puniqueid = process.ppid;
 		return sizeof(*info);
 	}
+	case PROC_PIDPATHINFO: {
+		char path[PATH_MAX];
+		if (!executable_path(pid, path)) {
+			return _ESRCH;
+		}
+		const char *guest = sysroot_guest_path(path);
+		int32_t length = (int32_t)strlen(guest) + 1;
+		if (buffersize < length) {
+			return _ENOMEM;
+		}
+		memcpy(buffer, guest, length);
+		return length;
+	}
 	case PROC_PIDCOALITIONINFO: {
 		uint64_t info[5] = {0};
 		if (buffersize < (int32_t)sizeof(info)) {
@@ -207,6 +228,29 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 	default:
 		unimplemented();
 	}
+}
+
+static bool
+executable_path(int32_t pid, char *path)
+{
+	char name[64];
+	snprintf(name, sizeof(name), "/proc/%d/cmdline", (int)pid);
+	int fd = open(name, O_RDONLY | O_CLOEXEC);
+	if (fd == -1) {
+		return false;
+	}
+	char arguments[PATH_MAX * 2];
+	ssize_t size = read(fd, arguments, sizeof(arguments) - 1);
+	close(fd);
+	if (size <= 0) {
+		return false;
+	}
+	arguments[size] = '\0';
+	size_t first = strlen(arguments) + 1;
+	if ((ssize_t)first >= size) {
+		return false;
+	}
+	return realpath(arguments + first, path) != NULL;
 }
 
 static int
