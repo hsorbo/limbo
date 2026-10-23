@@ -923,7 +923,7 @@ set_attributes(int dirfd, const char *path, int flags, void *alist,
 #endif
 	if ((alistp->commonattr
 			    & ~(ATTR_CMN_MODTIME | ATTR_CMN_ACCTIME
-					    | ATTR_CMN_FLAGS))
+					    | ATTR_CMN_ACCESSMASK | ATTR_CMN_FLAGS))
 			|| alistp->volattr || alistp->dirattr
 			|| alistp->fileattr || alistp->forkattr) {
 		unimplemented();
@@ -939,6 +939,18 @@ set_attributes(int dirfd, const char *path, int flags, void *alist,
 	}
 	if (alistp->commonattr & ATTR_CMN_ACCTIME) {
 		cursor = unpack_timespec(cursor, &times[0]);
+	}
+	if (alistp->commonattr & ATTR_CMN_ACCESSMASK) {
+		uint32_t mode;
+		memcpy(&mode, cursor, sizeof(mode));
+		cursor += sizeof(mode);
+		int r = (path == NULL)
+				? fchmod(dirfd, mode & 07777)
+				: fchmodat(dirfd, path, mode & 07777, flags);
+		if (r == -1 && !(errno == EOPNOTSUPP
+					    && (flags & AT_SYMLINK_NOFOLLOW))) {
+			return -1;
+		}
 	}
 	return (path == NULL) ? futimens(dirfd, times)
 			      : utimensat(dirfd, path, times, flags);
