@@ -38,10 +38,11 @@
 #ifndef __x86_64__
 #include <linux/filter.h>
 #include <linux/seccomp.h>
+#include <pthread.h>
 #include <stddef.h>
+#include <sys/mman.h>
 #endif
 #include <signal.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,6 +65,9 @@ static void handle_syscall(int sig, siginfo_t *info, void *ucontext);
 static bool returns_raw_result(unsigned long syscall, uint64_t arg1);
 #ifndef __x86_64__
 static int filter_install(const Elf64_Phdr *phdrs, unsigned long e_phnum);
+static int signal_stack_install(void);
+static void signal_stack_create_key(void);
+static void signal_stack_free(void *base);
 
 static bool filter_installed;
 #endif
@@ -79,22 +83,17 @@ static __thread uint64_t rdx_value;
 static void emulate_system_register(int sig, siginfo_t *info, void *ucontext);
 static void dispatch_syscall(mcontext_t *mc);
 static void set_bsd_result(mcontext_t *mc, int64_t result);
-static uint64_t host_thread_pointer;
+#define SIGNAL_STACK_SIZE (1UL << 20)
+
+struct signal_stack {
+	uint64_t thread_pointer;
+};
+
+static pthread_key_t signal_stack_key;
+static pthread_once_t signal_stack_once = PTHREAD_ONCE_INIT;
 static __thread uint64_t guest_thread_pointer;
 static __thread bool x1_pending;
 static __thread uint64_t x1_value;
-
-struct host_tls_binding {
-	uint64_t guest_pointer;
-	uint64_t host_pointer;
-};
-
-#define HOST_TLS_BINDING_MAX 4096
-static struct host_tls_binding host_tls_bindings[HOST_TLS_BINDING_MAX];
-static _Atomic uint32_t host_tls_binding_count;
-static atomic_flag host_tls_binding_lock;
-
-static uint64_t host_thread_pointer_for(uint64_t guest_pointer);
 #endif
 
 #ifndef __x86_64__
@@ -121,7 +120,7 @@ syscall_handler_install(void)
 	act.sa_sigaction = handle_syscall;
 	act.sa_flags = SA_SIGINFO | SA_NODEFER;
 #ifndef __x86_64__
-	act.sa_flags |= SA_RESTORER;
+	act.sa_flags |= SA_ONSTACK | SA_RESTORER;
 	act.sa_restorer = limbo_rt_sigreturn;
 #endif
 
@@ -130,10 +129,9 @@ syscall_handler_install(void)
 		return 1;
 	}
 #ifndef __x86_64__
-	asm volatile("mrs %0, tpidr_el0" : "=r"(host_thread_pointer));
 	struct sigaction ill = {0};
 	ill.sa_sigaction = emulate_system_register;
-	ill.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTORER;
+	ill.sa_flags = SA_SIGINFO | SA_NODEFER | SA_ONSTACK | SA_RESTORER;
 	ill.sa_restorer = limbo_rt_sigreturn;
 	if (sigaction(SIGILL, &ill, NULL) == -1) {
 		perror("sigaction");
@@ -250,10 +248,12 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 		return;
 	}
 
-	uint64_t entry_pointer;
+	uint64_t entry_pointer, stack_pointer;
 	asm volatile("mrs %0, tpidr_el0" : "=r"(entry_pointer));
-	asm volatile("msr tpidr_el0, %0" ::"r"(host_thread_pointer_for(
-							     entry_pointer)));
+	asm volatile("mov %0, sp" : "=r"(stack_pointer));
+	const struct signal_stack *stack = (const void *)(stack_pointer
+			& ~(SIGNAL_STACK_SIZE - 1));
+	asm volatile("msr tpidr_el0, %0" ::"r"(stack->thread_pointer));
 	uint64_t outer_pointer = guest_thread_pointer;
 	guest_thread_pointer = entry_pointer;
 
@@ -268,45 +268,6 @@ void
 syscall_set_guest_thread_pointer(uint64_t pointer)
 {
 	guest_thread_pointer = pointer;
-
-	uint64_t host;
-	asm volatile("mrs %0, tpidr_el0" : "=r"(host));
-
-	while (atomic_flag_test_and_set_explicit(
-			&host_tls_binding_lock, memory_order_acquire))
-		;
-
-	uint32_t count = atomic_load_explicit(
-			&host_tls_binding_count, memory_order_relaxed);
-	for (uint32_t i = 0; i < count; i++) {
-		if (host_tls_bindings[i].guest_pointer == pointer) {
-			host_tls_bindings[i].host_pointer = host;
-			atomic_flag_clear_explicit(
-					&host_tls_binding_lock,
-					memory_order_release);
-			return;
-		}
-	}
-
-	host_tls_bindings[count].guest_pointer = pointer;
-	host_tls_bindings[count].host_pointer = host;
-	atomic_store_explicit(&host_tls_binding_count, count + 1,
-			memory_order_release);
-	atomic_flag_clear_explicit(
-			&host_tls_binding_lock, memory_order_release);
-}
-
-static uint64_t
-host_thread_pointer_for(uint64_t guest_pointer)
-{
-	uint32_t count = atomic_load_explicit(
-			&host_tls_binding_count, memory_order_acquire);
-	for (uint32_t i = 0; i < count; i++) {
-		if (host_tls_bindings[i].guest_pointer == guest_pointer) {
-			return host_tls_bindings[i].host_pointer;
-		}
-	}
-	return host_thread_pointer;
 }
 
 static void
@@ -410,6 +371,9 @@ int
 syscall_dispatch_enable(void)
 {
 #ifndef __x86_64__
+	if (signal_stack_install()) {
+		return 1;
+	}
 	if (filter_installed) {
 		return 0;
 	}
@@ -487,5 +451,56 @@ filter_install(const Elf64_Phdr *phdrs, unsigned long e_phnum)
 	}
 	filter_installed = true;
 	return 0;
+}
+
+static int
+signal_stack_install(void)
+{
+	stack_t current;
+	if (sigaltstack(NULL, &current) == 0
+			&& !(current.ss_flags & SS_DISABLE)) {
+		return 0;
+	}
+
+	uint8_t *region = mmap(NULL, 2 * SIGNAL_STACK_SIZE,
+			PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+	if (region == MAP_FAILED) {
+		perror("mmap");
+		return 1;
+	}
+	uint8_t *base = (uint8_t *)(((uintptr_t)region + SIGNAL_STACK_SIZE - 1)
+			& ~(SIGNAL_STACK_SIZE - 1));
+	if (base != region) {
+		munmap(region, base - region);
+	}
+	munmap(base + SIGNAL_STACK_SIZE, region + SIGNAL_STACK_SIZE - base);
+
+	struct signal_stack *stack = (struct signal_stack *)base;
+	asm volatile("mrs %0, tpidr_el0" : "=r"(stack->thread_pointer));
+
+	stack_t ss = {
+			.ss_sp = base + sizeof(*stack),
+			.ss_size = SIGNAL_STACK_SIZE - sizeof(*stack),
+	};
+	sigaltstack(&ss, NULL);
+
+	pthread_once(&signal_stack_once, signal_stack_create_key);
+	pthread_setspecific(signal_stack_key, base);
+	return 0;
+}
+
+static void
+signal_stack_create_key(void)
+{
+	pthread_key_create(&signal_stack_key, signal_stack_free);
+}
+
+static void
+signal_stack_free(void *base)
+{
+	stack_t ss = {.ss_flags = SS_DISABLE};
+	sigaltstack(&ss, NULL);
+	munmap(base, SIGNAL_STACK_SIZE);
 }
 #endif
