@@ -2461,11 +2461,26 @@ sys_chmod_extended(user_addr_t path, void *uid, void *gid, int mode,
 		user_addr_t xsecurity)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "chmod_extended(%p, %p, %p, %p, %p)\n", (void *)path,
-			(void *)uid, (void *)gid, (void *)mode,
+	fprintf(stderr, "chmod_extended(\"%s\", %p, %p, %p, %p)\n",
+			(char *)path, (void *)uid, (void *)gid, (void *)mode,
 			(void *)xsecurity);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	const char *host_path = sysroot_host_path(path, 0, buffer);
+	if (chown(host_path,
+			    ((uid_t)(uintptr_t)uid == KAUTH_UID_NONE)
+					    ? (uid_t)-1
+					    : (uid_t)(uintptr_t)uid,
+			    ((gid_t)(uintptr_t)gid == KAUTH_GID_NONE)
+					    ? (gid_t)-1
+					    : (gid_t)(uintptr_t)gid)
+			== -1) {
+		return err_map(errno);
+	}
+	if (mode == -1) {
+		return 0;
+	}
+	return errno_map(chmod(host_path, mode & ALLPERMS));
 }
 
 int
@@ -2477,9 +2492,6 @@ sys_fchmod_extended(
 			(void *)uid, (void *)gid, (void *)mode,
 			(void *)xsecurity);
 #endif
-	if (xsecurity != NULL) {
-		unimplemented();
-	}
 	if (fchown(fd, (uid == KAUTH_UID_NONE) ? (uid_t)-1 : uid,
 			    (gid == KAUTH_GID_NONE) ? (gid_t)-1 : gid)
 			== -1) {
