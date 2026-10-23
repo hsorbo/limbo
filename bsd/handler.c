@@ -2662,7 +2662,11 @@ sys_getaudit_addr(void *auditinfo_addr, int length)
 	fprintf(stderr, "getaudit_addr(%p, %p)\n", (void *)auditinfo_addr,
 			(void *)length);
 #endif
-	unimplemented();
+	uint32_t *info = auditinfo_addr;
+	memset(info, 0, length);
+	info[0] = (uint32_t)-1;
+	info[9] = 10;
+	return 0;
 }
 
 int
