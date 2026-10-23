@@ -3290,7 +3290,10 @@ sys_memorystatus_control(uint32_t command, int32_t pid, uint32_t flags,
 			(void *)command, (void *)pid, (void *)flags,
 			(void *)buffer, (void *)buffersize);
 #endif
-	unimplemented();
+	if (buffer != NULL) {
+		memset(buffer, 0, buffersize);
+	}
+	return 0;
 }
 
 int
