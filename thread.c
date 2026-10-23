@@ -34,6 +34,7 @@
 #include <asm/prctl.h>
 #endif
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -99,6 +100,14 @@ thread_main(void *arg)
 {
 	struct thread *thread = arg;
 	current = thread;
+
+	sigset_t needed;
+	sigemptyset(&needed);
+	sigaddset(&needed, SIGSYS);
+	sigaddset(&needed, SIGILL);
+	sigaddset(&needed, SIGSEGV);
+	sigaddset(&needed, SIGBUS);
+	pthread_sigmask(SIG_UNBLOCK, &needed, NULL);
 
 	if (syscall_dispatch_enable()) {
 		abort();
