@@ -63,6 +63,7 @@
 #include <semaphore.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -1091,6 +1092,8 @@ sys_setpriority(int which, void *who, int prio)
 
 #define xnu_PF_UNIX    1
 #define xnu_AF_INET    2
+#define xnu_PF_ROUTE   17
+#define xnu_PF_SYSTEM  32
 #define xnu_AF_INET6   30
 #define xnu_SOCK_STREAM 1
 #define xnu_SOCK_DGRAM 2
@@ -1256,6 +1259,9 @@ sys_socket(int domain, int type, int protocol)
 	fprintf(stderr, "socket(%p, %p, %p)\n", (void *)domain, (void *)type,
 			(void *)protocol);
 #endif
+	if (domain == xnu_PF_ROUTE || domain == xnu_PF_SYSTEM) {
+		return _EAFNOSUPPORT;
+	}
 	int host_domain = translate_domain(domain);
 	if (host_domain == -1) {
 		unimplemented();
@@ -1285,6 +1291,12 @@ sys_getpriority(int which, void *who)
 	unimplemented();
 }
 
+struct xnu_sockaddr_un {
+	uint8_t sun_len;
+	uint8_t sun_family;
+	char sun_path[104];
+};
+
 int
 sys_bind(int s, void *name, void *namelen)
 {
@@ -1292,7 +1304,50 @@ sys_bind(int s, void *name, void *namelen)
 	fprintf(stderr, "bind(%p, %p, %p)\n", (void *)s, (void *)name,
 			(void *)namelen);
 #endif
-	unimplemented();
+	const struct xnu_sockaddr_un *address = name;
+	socklen_t length = (socklen_t)(uintptr_t)namelen;
+	if (length < 2 || address->sun_family != xnu_PF_UNIX) {
+		unimplemented();
+	}
+	char path[sizeof(address->sun_path) + 1] = {0};
+	size_t path_length = length - 2;
+	if (path_length > sizeof(address->sun_path)) {
+		path_length = sizeof(address->sun_path);
+	}
+	memcpy(path, address->sun_path, path_length);
+
+	char buffer[PATH_MAX];
+	const char *host_path = sysroot_host_path(path, AT_SYMLINK_NOFOLLOW,
+			buffer);
+	struct sockaddr_un linux_address = {.sun_family = AF_UNIX};
+	int directory = -1;
+	if (strlen(host_path) < sizeof(linux_address.sun_path)) {
+		strcpy(linux_address.sun_path, host_path);
+	} else {
+		char parent[PATH_MAX];
+		snprintf(parent, sizeof(parent), "%s", host_path);
+		char *slash = strrchr(parent, '/');
+		*slash = '\0';
+		directory = open(parent, O_PATH | O_DIRECTORY | O_CLOEXEC);
+		if (directory == -1) {
+			return err_map(errno);
+		}
+		if ((size_t)snprintf(linux_address.sun_path,
+				    sizeof(linux_address.sun_path),
+				    "/proc/thread-self/fd/%d/%s", directory,
+				    slash + 1)
+				>= sizeof(linux_address.sun_path)) {
+			close(directory);
+			return _ENAMETOOLONG;
+		}
+	}
+	int result = bind(s, (struct sockaddr *)&linux_address,
+			sizeof(linux_address));
+	int error = errno;
+	if (directory != -1) {
+		close(directory);
+	}
+	return result == -1 ? err_map(error) : 0;
 }
 
 int
@@ -1317,7 +1372,7 @@ sys_listen(int s, int backlog)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "listen(%p, %p)\n", (void *)s, (void *)backlog);
 #endif
-	unimplemented();
+	return errno_map(listen(s, backlog));
 }
 
 int
@@ -1527,7 +1582,13 @@ sys_socketpair(int domain, int type, int protocol, int *rsv)
 	fprintf(stderr, "socketpair(%p, %p, %p, %p)\n", (void *)domain,
 			(void *)type, (void *)protocol, (void *)rsv);
 #endif
-	unimplemented();
+	if (domain != xnu_PF_UNIX || protocol != 0
+			|| (type != xnu_SOCK_STREAM && type != xnu_SOCK_DGRAM)) {
+		unimplemented();
+	}
+	return errno_map(socketpair(AF_UNIX,
+			type == xnu_SOCK_STREAM ? SOCK_STREAM : SOCK_DGRAM, 0,
+			rsv));
 }
 
 int
