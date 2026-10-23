@@ -725,5 +725,16 @@ _kernelrpc_mach_vm_reallocate(vm_map_t target_task, mach_vm_address_t src,
 			(void *)dst, (void *)dst_size, (void *)align_mask,
 			(void *)options, (void *)flags);
 #endif
-	unimplemented();
+	kern_return_t kr = map_anonymous(dst, dst_size, align_mask,
+			flags | VM_FLAGS_ANYWHERE,
+			VM_PROT_READ | VM_PROT_WRITE);
+	if (kr != KERN_SUCCESS) {
+		return kr;
+	}
+	memcpy((void *)*dst, (void *)src,
+			src_size < dst_size ? src_size : dst_size);
+	mach_vm_address_t start = src & ~(mach_vm_address_t)PAGE_MASK;
+	mach_vm_address_t end = (src + src_size + PAGE_MASK) & ~PAGE_MASK;
+	munmap((void *)start, end - start);
+	return KERN_SUCCESS;
 }
