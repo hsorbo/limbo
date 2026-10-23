@@ -106,6 +106,35 @@ struct proc_bsdinfo {
 	uint64_t pbi_start_tvusec;
 };
 
+struct proc_taskinfo {
+	uint64_t pti_virtual_size;
+	uint64_t pti_resident_size;
+	uint64_t pti_total_user;
+	uint64_t pti_total_system;
+	uint64_t pti_threads_user;
+	uint64_t pti_threads_system;
+	int32_t pti_policy;
+	int32_t pti_faults;
+	int32_t pti_pageins;
+	int32_t pti_cow_faults;
+	int32_t pti_messages_sent;
+	int32_t pti_messages_received;
+	int32_t pti_syscalls_mach;
+	int32_t pti_syscalls_unix;
+	int32_t pti_csw;
+	int32_t pti_threadnum;
+	int32_t pti_numrunning;
+	int32_t pti_priority;
+};
+
+struct proc_taskallinfo {
+	struct proc_bsdinfo pbsd;
+	struct proc_taskinfo ptinfo;
+};
+
+#define PROC_PIDTASKALLINFO 2
+#define PROC_PIDTASKINFO    4
+
 #define PROC_PIDPATHINFO 11
 
 #define PROC_PIDPLATFORMINFO 30
@@ -113,6 +142,8 @@ struct proc_bsdinfo {
 
 static int pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer,
 		int32_t buffersize);
+static void bsdinfo(const struct process *process, struct proc_bsdinfo *info);
+static void taskinfo(struct proc_taskinfo *info);
 static int setcontrol(uint32_t flavor, user_addr_t buffer, int32_t buffersize);
 
 int
@@ -154,24 +185,24 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 		if (buffersize < (int32_t)sizeof(*info)) {
 			return _ENOMEM;
 		}
-		memset(info, 0, sizeof(*info));
-		info->pbi_flags = PROC_FLAG_LP64;
-		info->pbi_status = SRUN;
-		info->pbi_pid = process.pid;
-		info->pbi_ppid = process.ppid;
-		info->pbi_uid = process.uid[1];
-		info->pbi_gid = process.gid[1];
-		info->pbi_ruid = process.uid[0];
-		info->pbi_rgid = process.gid[0];
-		info->pbi_svuid = process.uid[2];
-		info->pbi_svgid = process.gid[2];
-		memcpy(info->pbi_comm, process.comm, sizeof(process.comm));
-		memcpy(info->pbi_name, process.comm, sizeof(process.comm));
-		info->pbi_pgid = process.pgid;
-		info->e_tpgid = process.tpgid;
-		info->pbi_nice = process.nice;
-		process_start_time(&process, &info->pbi_start_tvsec,
-				&info->pbi_start_tvusec);
+		bsdinfo(&process, info);
+		return sizeof(*info);
+	}
+	case PROC_PIDTASKINFO: {
+		struct proc_taskinfo *info = buffer;
+		if (buffersize < (int32_t)sizeof(*info)) {
+			return _ENOMEM;
+		}
+		taskinfo(info);
+		return sizeof(*info);
+	}
+	case PROC_PIDTASKALLINFO: {
+		struct proc_taskallinfo *info = buffer;
+		if (buffersize < (int32_t)sizeof(*info)) {
+			return _ENOMEM;
+		}
+		bsdinfo(&process, &info->pbsd);
+		taskinfo(&info->ptinfo);
 		return sizeof(*info);
 	}
 	case PROC_PIDT_SHORTBSDINFO: {
@@ -236,6 +267,39 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 	default:
 		unimplemented();
 	}
+}
+
+static void
+bsdinfo(const struct process *process, struct proc_bsdinfo *info)
+{
+	memset(info, 0, sizeof(*info));
+	info->pbi_flags = PROC_FLAG_LP64;
+	info->pbi_status = SRUN;
+	info->pbi_pid = process->pid;
+	info->pbi_ppid = process->ppid;
+	info->pbi_uid = process->uid[1];
+	info->pbi_gid = process->gid[1];
+	info->pbi_ruid = process->uid[0];
+	info->pbi_rgid = process->gid[0];
+	info->pbi_svuid = process->uid[2];
+	info->pbi_svgid = process->gid[2];
+	memcpy(info->pbi_comm, process->comm, sizeof(process->comm));
+	memcpy(info->pbi_name, process->comm, sizeof(process->comm));
+	info->pbi_pgid = process->pgid;
+	info->e_tpgid = process->tpgid;
+	info->pbi_nice = process->nice;
+	process_start_time(process, &info->pbi_start_tvsec,
+			&info->pbi_start_tvusec);
+}
+
+static void
+taskinfo(struct proc_taskinfo *info)
+{
+	memset(info, 0, sizeof(*info));
+	info->pti_threadnum = 1;
+	info->pti_numrunning = 1;
+	info->pti_priority = 31;
+	info->pti_policy = POLICY_TIMESHARE;
 }
 
 static int
