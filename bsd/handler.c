@@ -2112,7 +2112,10 @@ sys_open_dprotected_np(
 			(void *)path, (void *)flags, (void *)class,
 			(void *)dpflags, (void *)mode);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	return errno_map(open(
+			sysroot_host_path(path, open_follow(flags), buffer),
+			open_flags(flags), mode));
 }
 
 user_ssize_t
