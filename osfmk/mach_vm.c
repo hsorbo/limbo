@@ -443,7 +443,7 @@ remap_copy(mach_vm_address_t *target_address, mach_vm_size_t size,
 static vm_prot_t
 region_protection(mach_vm_address_t address)
 {
-	FILE *maps = fopen("/proc/self/maps", "r");
+	FILE *maps = fopen("/proc/thread-self/maps", "r");
 	char line[512];
 	vm_prot_t protection = VM_PROT_NONE;
 	while (fgets(line, sizeof(line), maps) != NULL) {
@@ -550,7 +550,7 @@ region_find(mach_vm_address_t address, mach_vm_address_t *start,
 		mach_vm_size_t *size, vm_prot_t *protection, bool *shared,
 		uint64_t *offset)
 {
-	FILE *maps = fopen("/proc/self/maps", "r");
+	FILE *maps = fopen("/proc/thread-self/maps", "r");
 	char line[512];
 	bool found = false;
 	while (fgets(line, sizeof(line), maps) != NULL) {
