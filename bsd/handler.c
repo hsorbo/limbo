@@ -84,6 +84,12 @@
 
 #define PT_DENY_ATTACH 31
 
+#define _ACCESS_READ_MASK ((1 << 9) | (1 << 15) | (1 << 17) | (1 << 19))
+#define _ACCESS_WRITE_MASK                                                     \
+	((1 << 10) | (1 << 12) | (1 << 13) | (1 << 14) | (1 << 16) | (1 << 18) \
+			| (1 << 20) | (1 << 21))
+#define _ACCESS_EXECUTE_MASK (1 << 11)
+
 static __thread unsigned long current_syscall;
 
 int
@@ -2479,7 +2485,45 @@ sys_access_extended(user_addr_t entries, size_t size, user_addr_t results,
 	fprintf(stderr, "access_extended(%p, %p, %p, %p)\n", (void *)entries,
 			(void *)size, (void *)results, (void *)uid);
 #endif
-	unimplemented();
+	struct accessx_descriptor {
+		unsigned int ad_name_offset;
+		int ad_flags;
+		int ad_pad[2];
+	};
+	const struct accessx_descriptor *descriptors = entries;
+	if (size < sizeof(*descriptors)
+			|| descriptors[0].ad_name_offset < sizeof(*descriptors)
+			|| descriptors[0].ad_name_offset >= size) {
+		return _EINVAL;
+	}
+	size_t count = descriptors[0].ad_name_offset / sizeof(*descriptors);
+	int *errors = results;
+	const char *name = NULL;
+	for (size_t i = 0; i < count; i++) {
+		unsigned int offset = descriptors[i].ad_name_offset;
+		if (offset != 0) {
+			if (offset >= size) {
+				return _EINVAL;
+			}
+			name = (const char *)entries + offset;
+		}
+		int flags = descriptors[i].ad_flags;
+		int mode = F_OK;
+		if (flags & (_R_OK | _ACCESS_READ_MASK)) {
+			mode |= R_OK;
+		}
+		if (flags & (_W_OK | _ACCESS_WRITE_MASK)) {
+			mode |= W_OK;
+		}
+		if (flags & (_X_OK | _ACCESS_EXECUTE_MASK)) {
+			mode |= X_OK;
+		}
+		char buffer[PATH_MAX];
+		int r = errno_map(access(
+				sysroot_host_path(name, 0, buffer), mode));
+		errors[i] = (r < 0) ? -r : 0;
+	}
+	return 0;
 }
 
 int
