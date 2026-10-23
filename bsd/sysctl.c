@@ -43,6 +43,12 @@
 #include "shared_cache.h"
 #include "xnu-errno.h"
 
+#ifdef __arm64__
+#define HOST_CPU_TYPE CPU_TYPE_ARM64
+#else
+#define HOST_CPU_TYPE CPU_TYPE_X86_64
+#endif
+
 #define CTL_UNSPEC 0
 #define CTL_KERN   1
 #define CTL_HW     6
@@ -191,7 +197,7 @@ static const struct sysctl_node nodes[] = {
 		{"hw.physicalcpu_max", {0, 0}, SYSCTL_READER,
 				.reader = read_ncpu},
 		{"hw.cachelinesize", {0, 0}, SYSCTL_QUAD, .number = 64},
-		{"hw.cputype", {0, 0}, SYSCTL_INT, .number = CPU_TYPE_X86_64},
+		{"hw.cputype", {0, 0}, SYSCTL_INT, .number = HOST_CPU_TYPE},
 		{"hw.cpusubtype", {0, 0}, SYSCTL_READER,
 				.reader = read_cpusubtype},
 		{"hw.cpu64bit_capable", {0, 0}, SYSCTL_INT, .number = 1},
