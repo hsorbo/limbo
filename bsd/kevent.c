@@ -94,6 +94,7 @@
 #define NOTE_WL_THREAD_REQUEST 0x00000001
 #define NOTE_WL_SYNC_WAIT      0x00000004
 #define NOTE_WL_SYNC_WAKE      0x00000008
+#define NOTE_WL_SYNC_IPC       0x80000000
 #define NOTE_WL_COMMANDS_MASK  0x8000000f
 #define NOTE_WL_END_OWNERSHIP  0x00000020
 #define NOTE_WL_IGNORE_ESTALE  0x00000100
@@ -798,6 +799,8 @@ workloop_touch(struct knote *kn, const struct kevent_qos_s *change)
 		kn->kq->owned = true;
 		kn->woken = true;
 		pthread_cond_broadcast(&sync_wakeup);
+		return 0;
+	case NOTE_WL_SYNC_IPC:
 		return 0;
 	default:
 		unimplemented();
