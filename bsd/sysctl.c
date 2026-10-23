@@ -45,8 +45,12 @@
 
 #ifdef __arm64__
 #define HOST_CPU_TYPE CPU_TYPE_ARM64
+#define HOST_MACHINE  "arm64"
+#define HOST_MODEL    "Mac17,2"
 #else
 #define HOST_CPU_TYPE CPU_TYPE_X86_64
+#define HOST_MACHINE  "x86_64"
+#define HOST_MODEL    "MacPro7,1"
 #endif
 
 #define CTL_UNSPEC 0
@@ -176,9 +180,13 @@ static const struct sysctl_node nodes[] = {
 				.string = "27.0"},
 		{"kern.secure_kernel", {0, 0}, SYSCTL_INT, .number = 0},
 		{"hw.machine", {CTL_HW, HW_MACHINE}, SYSCTL_STRING,
-				.string = "x86_64"},
+				.string = HOST_MACHINE},
 		{"hw.model", {CTL_HW, HW_MODEL}, SYSCTL_STRING,
-				.string = "MacPro7,1"},
+				.string = HOST_MODEL},
+#ifdef __arm64__
+		{"hw.product", {0, 0}, SYSCTL_STRING, .string = HOST_MODEL},
+		{"hw.target", {0, 0}, SYSCTL_STRING, .string = "J704AP"},
+#endif
 		{"hw.ncpu", {CTL_HW, HW_NCPU}, SYSCTL_READER,
 				.reader = read_ncpu},
 		{"hw.byteorder", {CTL_HW, HW_BYTEORDER}, SYSCTL_INT,

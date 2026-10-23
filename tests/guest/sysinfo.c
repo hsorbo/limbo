@@ -39,8 +39,10 @@
 
 #ifdef __arm64__
 #define HOST_CPU_TYPE CPU_TYPE_ARM64
+#define HOST_MACHINE  "arm64"
 #else
 #define HOST_CPU_TYPE CPU_TYPE_X86_64
+#define HOST_MACHINE  "x86_64"
 #endif
 
 int
@@ -62,6 +64,15 @@ main(void)
 	size = sizeof(cputype);
 	CHECK(sysctlbyname("hw.cputype", &cputype, &size, NULL, 0) == 0);
 	CHECK(cputype == HOST_CPU_TYPE);
+	char machine[32];
+	size = sizeof(machine);
+	CHECK(sysctlbyname("hw.machine", machine, &size, NULL, 0) == 0);
+	CHECK(strcmp(machine, HOST_MACHINE) == 0);
+#ifdef __arm64__
+	char target[32];
+	size = sizeof(target);
+	CHECK(sysctlbyname("hw.target", target, &size, NULL, 0) == 0);
+#endif
 
 	struct kinfo_proc info;
 	size = sizeof(info);
