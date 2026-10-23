@@ -26,10 +26,12 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <dirent.h>
 #include <limits.h>
 #include <mach/mach.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
 #include <unistd.h>
@@ -40,12 +42,18 @@
 #include "sysroot.h"
 #include "xnu-errno.h"
 
+#define PROC_INFO_CALL_LISTPIDS        0x1
 #define PROC_INFO_CALL_PIDINFO         0x2
 #define PROC_INFO_CALL_SETCONTROL      0x5
 #define PROC_INFO_CALL_DIRTYCONTROL    0x8
 #define PROC_INFO_CALL_SET_DYLD_IMAGES 0xf
 
 #define PROC_SELFSET_THREADNAME 2
+
+#define PROC_ALL_PIDS  1
+#define PROC_UID_ONLY  4
+#define PROC_RUID_ONLY 5
+#define PROC_PPID_ONLY 6
 
 #define PROC_PIDTBSDINFO           3
 #define PROC_PIDT_SHORTBSDINFO     13
@@ -145,6 +153,10 @@ static int pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer,
 static void bsdinfo(const struct process *process, struct proc_bsdinfo *info);
 static void taskinfo(struct proc_taskinfo *info);
 static int setcontrol(uint32_t flavor, user_addr_t buffer, int32_t buffersize);
+static int listpids(uint32_t type, uint32_t typeinfo, user_addr_t buffer,
+		int32_t buffersize);
+static bool status_field(pid_t pid, const char *field, int index,
+		unsigned long *value);
 
 int
 sys_proc_info(int32_t callnum, int32_t pid, uint32_t flavor, uint64_t arg,
@@ -156,6 +168,8 @@ sys_proc_info(int32_t callnum, int32_t pid, uint32_t flavor, uint64_t arg,
 			(void *)buffer, (void *)buffersize);
 #endif
 	switch (callnum) {
+	case PROC_INFO_CALL_LISTPIDS:
+		return listpids(pid, flavor, buffer, buffersize);
 	case PROC_INFO_CALL_PIDINFO:
 		return pidinfo(pid, flavor, buffer, buffersize);
 	case PROC_INFO_CALL_SETCONTROL:
@@ -313,4 +327,81 @@ setcontrol(uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 	snprintf(name, sizeof(name), "%.*s", buffersize, (char *)buffer);
 	prctl(PR_SET_NAME, name);
 	return 0;
+}
+
+static int
+listpids(uint32_t type, uint32_t typeinfo, user_addr_t buffer,
+		int32_t buffersize)
+{
+	DIR *proc = opendir("/proc");
+	int32_t size = 0;
+	int *pids = buffer;
+	struct dirent *entry;
+	while ((entry = readdir(proc)) != NULL) {
+		char *end;
+		long pid = strtol(entry->d_name, &end, 10);
+		if (*end != '\0') {
+			continue;
+		}
+		unsigned long value;
+		bool match;
+		switch (type) {
+		case PROC_ALL_PIDS:
+			match = true;
+			break;
+		case PROC_UID_ONLY:
+			match = status_field(pid, "Uid:", 1, &value)
+					&& value == typeinfo;
+			break;
+		case PROC_RUID_ONLY:
+			match = status_field(pid, "Uid:", 0, &value)
+					&& value == typeinfo;
+			break;
+		case PROC_PPID_ONLY:
+			match = status_field(pid, "PPid:", 0, &value)
+					&& value == typeinfo;
+			break;
+		default:
+			match = false;
+			break;
+		}
+		if (!match) {
+			continue;
+		}
+		if (buffer != NULL) {
+			if (size + (int32_t)sizeof(int) > buffersize) {
+				break;
+			}
+			pids[size / sizeof(int)] = (int)pid;
+		}
+		size += sizeof(int);
+	}
+	closedir(proc);
+	return size;
+}
+
+static bool
+status_field(pid_t pid, const char *field, int index, unsigned long *value)
+{
+	char path[64], line[256];
+	snprintf(path, sizeof(path), "/proc/%d/status", pid);
+	FILE *status = fopen(path, "r");
+	if (status == NULL) {
+		return false;
+	}
+	bool found = false;
+	size_t length = strlen(field);
+	while (fgets(line, sizeof(line), status) != NULL) {
+		if (strncmp(line, field, length) != 0) {
+			continue;
+		}
+		char *cursor = line + length;
+		for (int i = 0; i <= index; i++) {
+			*value = strtoul(cursor, &cursor, 10);
+		}
+		found = true;
+		break;
+	}
+	fclose(status);
+	return found;
 }
