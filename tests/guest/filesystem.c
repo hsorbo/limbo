@@ -187,6 +187,33 @@ check_attributes(void)
 	struct stat st;
 	CHECK(stat("attributes", &st) == 0);
 	CHECK(st.st_mtime == 1000000000 && st.st_atime == 1100000000);
+
+	char path[PATH_MAX];
+	CHECK(getcwd(path, sizeof(path)) != NULL);
+	strlcat(path, "/attributes", sizeof(path));
+	times[0].tv_sec = 1200000000;
+	CHECK(setattrlist(path, &times_request, times, sizeof(times), 0) == 0);
+	CHECK(stat("attributes", &st) == 0);
+	CHECK(st.st_mtime == 1200000000);
+
+	CHECK(symlink("nowhere", "link") == 0);
+	struct attrlist flags_request = {
+			.bitmapcount = ATTR_BIT_MAP_COUNT,
+			.commonattr = ATTR_CMN_FLAGS,
+	};
+	uint32_t flags = UF_HIDDEN;
+	CHECK(setattrlist("link", &flags_request, &flags, sizeof(flags),
+			      FSOPT_NOFOLLOW)
+			== 0);
+	CHECK(setattrlist("link", &times_request, times, sizeof(times),
+			      FSOPT_NOFOLLOW)
+			== 0);
+	CHECK(lstat("link", &st) == 0);
+	CHECK(st.st_mtime == 1200000000);
+	CHECK(setattrlist("link", &times_request, times, sizeof(times), 0)
+			== -1);
+	CHECK(errno == ENOENT);
+	CHECK(unlink("link") == 0);
 	CHECK(unlink("attributes") == 0);
 }
 

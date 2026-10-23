@@ -910,8 +910,8 @@ pack_u64(char *buffer, uint32_t offset, uint64_t value)
 }
 
 static int
-fsetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
-		uint64_t options)
+set_attributes(int dirfd, const char *path, int flags, void *alist,
+		void *attributeBuffer)
 {
 	const struct __darwin_attrlist *alistp = alist;
 #ifdef ENABLE_STRACE
@@ -921,7 +921,9 @@ fsetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
 			alistp->commonattr, alistp->volattr, alistp->dirattr,
 			alistp->fileattr, alistp->forkattr);
 #endif
-	if ((alistp->commonattr & ~(ATTR_CMN_MODTIME | ATTR_CMN_ACCTIME))
+	if ((alistp->commonattr
+			    & ~(ATTR_CMN_MODTIME | ATTR_CMN_ACCTIME
+					    | ATTR_CMN_FLAGS))
 			|| alistp->volattr || alistp->dirattr
 			|| alistp->fileattr || alistp->forkattr) {
 		unimplemented();
@@ -938,7 +940,8 @@ fsetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
 	if (alistp->commonattr & ATTR_CMN_ACCTIME) {
 		cursor = unpack_timespec(cursor, &times[0]);
 	}
-	return futimens(fd, times);
+	return (path == NULL) ? futimens(dirfd, times)
+			      : utimensat(dirfd, path, times, flags);
 }
 
 static const char *
@@ -1050,24 +1053,16 @@ sys_setattrlist(const char *path, void *alist, void *attributeBuffer,
 		size_t bufferSize, uint64_t options)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "setattrlist(%p, %p, %p, %p, %p)\n", (void *)path,
+	fprintf(stderr, "setattrlist(\"%s\", %p, %p, %p, %p)\n", path,
 			(void *)alist, (void *)attributeBuffer,
 			(void *)bufferSize, (void *)options);
 #endif
-	int fd = open(path, O_RDONLY);
-	if (fd == -1) {
-#ifdef ENABLE_STRACE
-		perror("open");
-#endif
+	int flags = (options & FSOPT_NOFOLLOW) ? AT_SYMLINK_NOFOLLOW : 0;
+	char buffer[PATH_MAX];
+	if (set_attributes(AT_FDCWD, sysroot_host_path(path, flags, buffer),
+			    flags, alist, attributeBuffer)) {
 		return err_map(errno);
 	}
-
-	if (fsetattrlist(fd, alist, attributeBuffer, bufferSize, options)) {
-		close(fd);
-		return err_map(errno);
-	}
-
-	close(fd);
 	return 0;
 }
 
@@ -1096,7 +1091,7 @@ sys_fsetattrlist(int fd, void *alist, void *attributeBuffer, size_t bufferSize,
 			(void *)alist, (void *)attributeBuffer,
 			(void *)bufferSize, (void *)options);
 #endif
-	if (fsetattrlist(fd, alist, attributeBuffer, bufferSize, options)) {
+	if (set_attributes(fd, NULL, 0, alist, attributeBuffer)) {
 		return err_map(errno);
 	}
 
@@ -1135,25 +1130,17 @@ sys_setattrlistat(int dirfd, const char *path, void *alist,
 		void *attributeBuffer, size_t bufferSize, uint32_t options)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "setattrlistat(%p, %p, %p, %p, %p, %p)\n",
-			(void *)dirfd, (void *)path, (void *)alist,
+	fprintf(stderr, "setattrlistat(%p, \"%s\", %p, %p, %p, %p)\n",
+			(void *)dirfd, path, (void *)alist,
 			(void *)attributeBuffer, (void *)bufferSize,
 			(void *)options);
 #endif
-	int fd = openat(dirfd, path, O_RDONLY);
-	if (fd == -1) {
-#ifdef ENABLE_STRACE
-		perror("open");
-#endif
+	int flags = (options & FSOPT_NOFOLLOW) ? AT_SYMLINK_NOFOLLOW : 0;
+	char buffer[PATH_MAX];
+	if (set_attributes(at_fd(dirfd), sysroot_host_path(path, flags, buffer),
+			    flags, alist, attributeBuffer)) {
 		return err_map(errno);
 	}
-
-	if (fsetattrlist(fd, alist, attributeBuffer, bufferSize, options)) {
-		close(dirfd);
-		return err_map(errno);
-	}
-
-	close(dirfd);
 	return 0;
 }
 
