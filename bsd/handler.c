@@ -68,6 +68,7 @@
 
 #include "commpage.h"
 #include "fs/at.h"
+#include "codesign.h"
 #include "handler.h"
 #include "kevent.h"
 #include "osfmk/broker_client.h"
@@ -1689,8 +1690,7 @@ sys_csops(uint64_t pid, uint32_t ops, user_addr_t useraddr,
 	fprintf(stderr, "csops(%p, %p, %p, %p)\n", (void *)pid, (void *)ops,
 			(void *)useraddr, (void *)usersize);
 #endif
-	/* TODO: Handle */
-	return 0;
+	return codesign_ops((int32_t)pid, ops, useraddr, usersize);
 }
 
 int
@@ -1702,8 +1702,7 @@ sys_csops_audittoken(uint64_t pid, uint32_t ops, user_addr_t useraddr,
 			(void *)ops, (void *)useraddr, (void *)usersize,
 			(void *)uaudittoken);
 #endif
-	/* TODO: Implement */
-	return err_map(EINVAL);
+	return codesign_ops((int32_t)pid, ops, useraddr, usersize);
 }
 
 int
