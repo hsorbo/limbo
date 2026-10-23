@@ -26,6 +26,7 @@
  */
 
 #include <pthread.h>
+#include <pthread/qos.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -88,6 +89,8 @@ main(void)
 		CHECK(pthread_join(threads[i], NULL) == 0);
 	}
 	CHECK(written == THREADS / 2 * ITERATIONS / 10);
+
+	CHECK(qos_class_main() != QOS_CLASS_UNSPECIFIED);
 
 	char name[32];
 	CHECK(pthread_setname_np("limbo-main") == 0);
