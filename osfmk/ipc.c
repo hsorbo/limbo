@@ -1091,6 +1091,9 @@ receive(mach_msg_header_t *msg, mach_msg_option64_t options,
 			= REQUESTED_TRAILER_SIZE((mach_msg_option_t)options);
 	if (size + trailer_size > rcv_size && (options & MACH_RCV_LARGE)) {
 		msg->msgh_size = size + trailer_size;
+		if (options & MACH_RCV_LARGE_IDENTITY) {
+			msg->msgh_local_port = port->name;
+		}
 		pthread_mutex_unlock(&lock);
 		return MACH_RCV_TOO_LARGE;
 	}
