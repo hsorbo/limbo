@@ -37,6 +37,7 @@
 
 #include "codesign.h"
 #include "process.h"
+#include "sha.h"
 #include "xnu-errno.h"
 
 enum {
@@ -78,6 +79,8 @@ enum {
 #define CSSLOT_ENTITLEMENTS        5
 #define CSSLOT_DER_ENTITLEMENTS    7
 #define CSSLOT_ALTERNATE_FIRST     0x1000
+#define CS_HASHTYPE_SHA1           1
+#define CS_CDHASH_LEN              20
 
 struct signature {
 	uint8_t *bytes;
@@ -95,6 +98,8 @@ static void index_blobs(struct signature *signature);
 static uint32_t status_flags(const struct signature *signature);
 static const char *code_directory_string(const struct signature *signature,
 		uint32_t field, uint32_t version);
+static void code_directory_hash(
+		const struct signature *signature, uint8_t hash[CS_CDHASH_LEN]);
 static int reply_blob(const uint8_t *blob, void *buffer, size_t size);
 static int reply_string(const char *string, void *buffer, size_t size);
 static uint32_t big(const uint8_t *bytes);
@@ -150,9 +155,17 @@ codesign_ops(int32_t pid, uint32_t ops, void *buffer, size_t size)
 		r = 0;
 		break;
 	}
-	case CS_OPS_CDHASH:
-		r = _EINVAL;
+	case CS_OPS_CDHASH: {
+		uint8_t hash[CS_CDHASH_LEN];
+		if (size < sizeof(hash)) {
+			r = _ERANGE;
+			break;
+		}
+		code_directory_hash(&signature, hash);
+		memcpy(buffer, hash, sizeof(hash));
+		r = 0;
 		break;
+	}
 	default:
 		r = 0;
 		break;
@@ -301,6 +314,22 @@ index_blobs(struct signature *signature)
 			signature->der_entitlements = blob;
 		}
 	}
+}
+
+static void
+code_directory_hash(
+		const struct signature *signature, uint8_t hash[CS_CDHASH_LEN])
+{
+	const uint8_t *directory = signature->code_directory;
+	uint32_t length = big(directory + 4);
+	uint8_t hash_type = directory[37];
+	if (hash_type == CS_HASHTYPE_SHA1) {
+		sha1(directory, length, hash);
+		return;
+	}
+	uint8_t digest[SHA256_DIGEST_LENGTH];
+	sha256(directory, length, digest);
+	memcpy(hash, digest, CS_CDHASH_LEN);
 }
 
 static uint32_t
