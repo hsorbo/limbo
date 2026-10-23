@@ -4785,11 +4785,14 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		return sys_psynch_cvwait((void *)arg1, arg2, arg3, (void *)arg4,
 				arg5, arg6, sp[1], sp[2]);
 	case 0x132:
-		return sys_nosys();
+		return sys_psynch_rw_rdlock(
+				(void *)arg1, arg2, arg3, arg4, arg5);
 	case 0x133:
-		return sys_nosys();
+		return sys_psynch_rw_wrlock(
+				(void *)arg1, arg2, arg3, arg4, arg5);
 	case 0x134:
-		return sys_nosys();
+		return sys_psynch_rw_unlock(
+				(void *)arg1, arg2, arg3, arg4, arg5);
 	case 0x135:
 		return sys_nosys();
 	case 0x136:
