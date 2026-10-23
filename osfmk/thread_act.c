@@ -211,6 +211,20 @@ thread_info(thread_inspect_t target_act, thread_flavor_t flavor,
 		*thread_info_outCnt = THREAD_EXTENDED_INFO_COUNT;
 		return KERN_SUCCESS;
 	}
+	case THREAD_SCHED_TIMESHARE_INFO: {
+		if (*thread_info_outCnt < POLICY_TIMESHARE_INFO_COUNT) {
+			return KERN_INVALID_ARGUMENT;
+		}
+		policy_timeshare_info_t info
+				= (policy_timeshare_info_t)thread_info_out;
+		*info = (policy_timeshare_info_data_t){
+				.max_priority = 63,
+				.base_priority = 31,
+				.cur_priority = 31,
+		};
+		*thread_info_outCnt = POLICY_TIMESHARE_INFO_COUNT;
+		return KERN_SUCCESS;
+	}
 	default:
 		unimplemented();
 	}

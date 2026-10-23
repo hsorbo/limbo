@@ -106,9 +106,9 @@ int
 sys_enosys(void)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "enosys()\n");
+	fprintf(stderr, "enosys(%#lx)\n", current_syscall);
 #endif
-	unimplemented();
+	return _ENOSYS;
 }
 
 int __attribute__((noreturn)) sys_exit(int rval)
@@ -1803,7 +1803,11 @@ sys_thread_selfcounts(int type, user_addr_t buf, user_size_t nbytes)
 	fprintf(stderr, "thread_selfcounts(%p, %p, %p)\n", (void *)type,
 			(void *)buf, (void *)nbytes);
 #endif
-	unimplemented();
+	if (buf == NULL) {
+		return _EINVAL;
+	}
+	memset(buf, 0, nbytes);
+	return 0;
 }
 
 int
