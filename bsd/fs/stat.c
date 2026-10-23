@@ -367,9 +367,7 @@ convert_statfs(const struct statfs *src, dev_t device,
 	dest->f_fsid.__val[0] = darwin_device(device);
 	dest->f_fsid.__val[1] = DARWIN_FSTYPE_APFS;
 	dest->f_type = src->f_type;
-	/* This makes dyld use getdirentries64, but I am not sure what it does,
-	 * it checks if the 0x20 bit is set */
-	dest->f_flags = 0x20;
+	dest->f_flags = DARWIN_MOUNT_FLAGS;
 	strcpy(dest->f_fstypename, "apfs");
 	strcpy(dest->f_mntonname, "/");
 	strcpy(dest->f_mntfromname, "/dev/disk1s1");
