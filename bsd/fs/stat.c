@@ -199,7 +199,9 @@ convert_statx(struct statx *stat, struct __darwin_user64_stat64 *dest)
 			makedev(stat->stx_dev_major, stat->stx_dev_minor));
 	dest->st_mode = stat->stx_mode;
 	dest->st_nlink = stat->stx_nlink;
-	dest->st_ino = stat->stx_ino;
+	dest->st_ino = sysroot_file_id(
+			makedev(stat->stx_dev_major, stat->stx_dev_minor),
+			stat->stx_ino);
 	dest->st_uid = stat->stx_uid;
 	dest->st_gid = stat->stx_gid;
 	dest->st_rdev = (stat->stx_rdev_major << 24) | stat->stx_rdev_minor;

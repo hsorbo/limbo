@@ -35,12 +35,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
 #include "sysroot.h"
 
 static char root[PATH_MAX];
+static dev_t root_dev;
+static ino_t root_ino;
 static size_t root_length;
 
 static int open_in_root(const char *path, int flags);
@@ -59,6 +62,10 @@ sysroot_open(void)
 		return 1;
 	}
 	root_length = strlen(root);
+	struct stat s;
+	stat(root, &s);
+	root_dev = s.st_dev;
+	root_ino = s.st_ino;
 
 	return 0;
 }
@@ -159,4 +166,13 @@ read_fd_path(int fd, char *buffer)
 		buffer[length] = '\0';
 	}
 	return length;
+}
+
+uint64_t
+sysroot_file_id(dev_t dev, uint64_t ino)
+{
+	if (root_length != 0 && dev == root_dev && ino == root_ino) {
+		return 2;
+	}
+	return ino;
 }

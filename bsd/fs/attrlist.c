@@ -37,6 +37,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -44,6 +45,7 @@
 #include "at.h"
 #include "bsd/xnu-errno.h"
 #include "device.h"
+#include "fileid.h"
 #include "sysroot.h"
 
 typedef uint32_t attrgroup_t;
@@ -138,6 +140,7 @@ struct reference {
 #define ATTR_VOL_FSTYPENAME      0x00100000
 #define ATTR_VOL_FSSUBTYPE       0x00200000
 #define ATTR_VOL_OWNER           0x00400000
+#define ATTR_VOL_SPACEUSED       0x00800000
 #define ATTR_VOL_QUOTA_SIZE      0x10000000
 #define ATTR_VOL_RESERVED_SIZE   0x20000000
 #define ATTR_VOL_ATTRIBUTES      0x40000000
@@ -145,6 +148,18 @@ struct reference {
 
 #define ATTR_DIR_LINKCOUNT   0x00000001
 #define ATTR_DIR_MOUNTSTATUS 0x00000004
+
+#define DIR_MNTSTATUS_MNTPOINT 0x00000001
+
+#define VOLUME_NAME "Macintosh HD"
+
+#define VOLUME_SIGNATURE              0x4244
+#define VOLUME_MOUNT_FLAGS            0x4480d000
+#define VOL_CAP_FMT_CASE_SENSITIVE    0x00000100
+#define VOLUME_FORMAT_CAPABILITIES    (0x039b6edf | VOL_CAP_FMT_CASE_SENSITIVE)
+#define VOLUME_FORMAT_VALID           0x07ffffff
+#define VOLUME_INTERFACE_CAPABILITIES 0x01ad6fc7
+#define VOLUME_INTERFACE_VALID        0x01ffffff
 
 #define ATTR_FILE_LINKCOUNT     0x00000001
 #define ATTR_FILE_TOTALSIZE     0x00000002
@@ -262,6 +277,7 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 	snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
 	readlink(link, host_path, sizeof(host_path) - 1);
 	const char *path = sysroot_guest_path(host_path);
+	fileid_remember(sysroot_file_id(s.st_dev, s.st_ino), path);
 
 	attribute_set_t returned = {
 			.commonattr = alistp->commonattr & ~ATTR_CMN_ERROR,
@@ -293,14 +309,18 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 	uint32_t reference_count = 0;
 
 	if (returned.commonattr & ATTR_CMN_RETURNED_ATTRS) {
-		memcpy(buffer + offset, &returned, sizeof(returned));
+		attribute_set_t reported = returned;
+		reported.volattr &= ~ATTR_VOL_INFO;
+		memcpy(buffer + offset, &reported, sizeof(reported));
 		offset += sizeof(returned);
 		commonattr &= ~ATTR_CMN_RETURNED_ATTRS;
 	}
 
 	if (returned.commonattr & ATTR_CMN_NAME) {
 		offset = pack_reference(buffer, offset, references,
-				&reference_count, basename(path));
+				&reference_count,
+				strcmp(path, "/") == 0 ? VOLUME_NAME
+						       : basename(path));
 		commonattr &= ~ATTR_CMN_NAME;
 	}
 
@@ -348,7 +368,7 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 	if (returned.commonattr & ATTR_CMN_OBJID) {
 		fsobj_id_t id = {
 				.fid_objno
-				= s.st_ino, /* TODO: This isn't correct */
+				= (uint32_t)sysroot_file_id(s.st_dev, s.st_ino),
 				.fid_generation = 0xfffffff,
 		};
 		memcpy(buffer + offset, &id, sizeof(id));
@@ -413,7 +433,7 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 	}
 
 	if (returned.commonattr & ATTR_CMN_FILEID) {
-		uint64_t ino = s.st_ino;
+		uint64_t ino = sysroot_file_id(s.st_dev, s.st_ino);
 		memcpy(buffer + offset, &ino, sizeof(ino));
 		offset += sizeof(uint64_t);
 		commonattr &= ~ATTR_CMN_FILEID;
@@ -425,7 +445,16 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		strrchr(parent_path, '/')[1] = '\0';
 		struct stat parent = {0};
 		stat(parent_path, &parent);
-		offset = pack_u64(buffer, offset, parent.st_ino);
+		uint64_t parent_id = strcmp(path, "/") == 0
+				? 1
+				: sysroot_file_id(parent.st_dev, parent.st_ino);
+		offset = pack_u64(buffer, offset, parent_id);
+		parent_path[strlen(parent_path) - 1] = '\0';
+		fileid_remember(parent_id,
+				parent_path[0] != '\0'
+						? sysroot_guest_path(
+								  parent_path)
+						: "/");
 		commonattr &= ~ATTR_CMN_PARENTID;
 	}
 
@@ -450,6 +479,73 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		volattr &= ~ATTR_VOL_FSTYPE;
 	}
 
+	struct statvfs vfs;
+	fstatvfs(fd, &vfs);
+	uint64_t block = vfs.f_frsize;
+
+	if (returned.volattr & ATTR_VOL_SIGNATURE) {
+		offset = pack_u32(buffer, offset, VOLUME_SIGNATURE);
+		volattr &= ~ATTR_VOL_SIGNATURE;
+	}
+
+	if (returned.volattr & ATTR_VOL_SIZE) {
+		offset = pack_u64(buffer, offset, vfs.f_blocks * block);
+		volattr &= ~ATTR_VOL_SIZE;
+	}
+
+	if (returned.volattr & ATTR_VOL_SPACEFREE) {
+		offset = pack_u64(buffer, offset, vfs.f_bfree * block);
+		volattr &= ~ATTR_VOL_SPACEFREE;
+	}
+
+	if (returned.volattr & ATTR_VOL_SPACEAVAIL) {
+		offset = pack_u64(buffer, offset, vfs.f_bavail * block);
+		volattr &= ~ATTR_VOL_SPACEAVAIL;
+	}
+
+	if (returned.volattr & ATTR_VOL_SPACEUSED) {
+		offset = pack_u64(buffer, offset,
+				(vfs.f_blocks - vfs.f_bfree) * block);
+		volattr &= ~ATTR_VOL_SPACEUSED;
+	}
+
+	if (returned.volattr & ATTR_VOL_MINALLOCATION) {
+		offset = pack_u64(buffer, offset, block);
+		volattr &= ~ATTR_VOL_MINALLOCATION;
+	}
+
+	if (returned.volattr & ATTR_VOL_ALLOCATIONCLUMP) {
+		offset = pack_u64(buffer, offset, block);
+		volattr &= ~ATTR_VOL_ALLOCATIONCLUMP;
+	}
+
+	if (returned.volattr & ATTR_VOL_IOBLOCKSIZE) {
+		offset = pack_u32(buffer, offset, (uint32_t)vfs.f_bsize);
+		volattr &= ~ATTR_VOL_IOBLOCKSIZE;
+	}
+
+	if (returned.volattr & ATTR_VOL_OBJCOUNT) {
+		offset = pack_u32(buffer, offset,
+				(uint32_t)(vfs.f_files - vfs.f_ffree));
+		volattr &= ~ATTR_VOL_OBJCOUNT;
+	}
+
+	if (returned.volattr & ATTR_VOL_FILECOUNT) {
+		offset = pack_u32(buffer, offset,
+				(uint32_t)(vfs.f_files - vfs.f_ffree));
+		volattr &= ~ATTR_VOL_FILECOUNT;
+	}
+
+	if (returned.volattr & ATTR_VOL_DIRCOUNT) {
+		offset = pack_u32(buffer, offset, 0);
+		volattr &= ~ATTR_VOL_DIRCOUNT;
+	}
+
+	if (returned.volattr & ATTR_VOL_MAXOBJCOUNT) {
+		offset = pack_u32(buffer, offset, (uint32_t)vfs.f_files);
+		volattr &= ~ATTR_VOL_MAXOBJCOUNT;
+	}
+
 	if (returned.volattr & ATTR_VOL_MOUNTPOINT) {
 		offset = pack_reference(buffer, offset, references,
 				&reference_count, "/");
@@ -458,13 +554,12 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 
 	if (returned.volattr & ATTR_VOL_NAME) {
 		offset = pack_reference(buffer, offset, references,
-				&reference_count, "Macintosh HD");
+				&reference_count, VOLUME_NAME);
 		volattr &= ~ATTR_VOL_NAME;
 	}
 
 	if (returned.volattr & ATTR_VOL_MOUNTFLAGS) {
-		/* TODO: Return converted mount flags? */
-		uint32_t flags = 0;
+		uint32_t flags = VOLUME_MOUNT_FLAGS;
 		memcpy(buffer + offset, &flags, sizeof(flags));
 		offset += sizeof(flags);
 		volattr &= ~ATTR_VOL_MOUNTFLAGS;
@@ -476,8 +571,18 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		volattr &= ~ATTR_VOL_MOUNTEDDEVICE;
 	}
 
+	if (returned.volattr & ATTR_VOL_ENCODINGSUSED) {
+		offset = pack_u64(buffer, offset, 0);
+		volattr &= ~ATTR_VOL_ENCODINGSUSED;
+	}
+
 	if (returned.volattr & ATTR_VOL_CAPABILITIES) {
-		vol_capabilities_attr_t cap = {0};
+		vol_capabilities_attr_t cap = {
+				.capabilities = {VOLUME_FORMAT_CAPABILITIES,
+						VOLUME_INTERFACE_CAPABILITIES},
+				.valid
+				= {VOLUME_FORMAT_VALID, VOLUME_INTERFACE_VALID},
+		};
 		memcpy(buffer + offset, &cap, sizeof(cap));
 		offset += sizeof(cap);
 		volattr &= ~ATTR_VOL_CAPABILITIES;
@@ -497,20 +602,14 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		volattr &= ~ATTR_VOL_MOUNTEXTFLAGS;
 	}
 
-	if (returned.volattr & ATTR_VOL_FSTYPENAME) {
-		offset = pack_reference(buffer, offset, references,
-				&reference_count, "apfs");
-		volattr &= ~ATTR_VOL_FSTYPENAME;
+	if (returned.volattr & ATTR_VOL_QUOTA_SIZE) {
+		offset = pack_u64(buffer, offset, vfs.f_blocks * block);
+		volattr &= ~ATTR_VOL_QUOTA_SIZE;
 	}
 
-	if (returned.volattr & ATTR_VOL_FSSUBTYPE) {
-		offset = pack_u32(buffer, offset, 0);
-		volattr &= ~ATTR_VOL_FSSUBTYPE;
-	}
-
-	if (returned.volattr & ATTR_VOL_OWNER) {
-		offset = pack_u32(buffer, offset, 0);
-		volattr &= ~ATTR_VOL_OWNER;
+	if (returned.volattr & ATTR_VOL_RESERVED_SIZE) {
+		offset = pack_u64(buffer, offset, 0);
+		volattr &= ~ATTR_VOL_RESERVED_SIZE;
 	}
 
 	if (returned.volattr & ATTR_VOL_ATTRIBUTES) {
@@ -536,16 +635,31 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 						| ATTR_CMN_ADDEDTIME
 						| ATTR_CMN_DATA_PROTECT_FLAGS
 						| ATTR_CMN_RETURNED_ATTRS,
-				.volattr = ATTR_VOL_FSTYPE | ATTR_VOL_MOUNTPOINT
+				.volattr = ATTR_VOL_FSTYPE | ATTR_VOL_SIGNATURE
+						| ATTR_VOL_SIZE
+						| ATTR_VOL_SPACEFREE
+						| ATTR_VOL_SPACEAVAIL
+						| ATTR_VOL_MINALLOCATION
+						| ATTR_VOL_ALLOCATIONCLUMP
+						| ATTR_VOL_IOBLOCKSIZE
+						| ATTR_VOL_OBJCOUNT
+						| ATTR_VOL_FILECOUNT
+						| ATTR_VOL_DIRCOUNT
+						| ATTR_VOL_MAXOBJCOUNT
+						| ATTR_VOL_MOUNTPOINT
 						| ATTR_VOL_NAME
 						| ATTR_VOL_MOUNTFLAGS
 						| ATTR_VOL_MOUNTEDDEVICE
+						| ATTR_VOL_ENCODINGSUSED
 						| ATTR_VOL_CAPABILITIES
 						| ATTR_VOL_UUID
 						| ATTR_VOL_MOUNTEXTFLAGS
 						| ATTR_VOL_FSTYPENAME
 						| ATTR_VOL_FSSUBTYPE
 						| ATTR_VOL_OWNER
+						| ATTR_VOL_SPACEUSED
+						| ATTR_VOL_QUOTA_SIZE
+						| ATTR_VOL_RESERVED_SIZE
 						| ATTR_VOL_ATTRIBUTES
 						| ATTR_VOL_INFO,
 				.dirattr
@@ -565,6 +679,22 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		volattr &= ~ATTR_VOL_ATTRIBUTES;
 	}
 
+	if (returned.volattr & ATTR_VOL_FSTYPENAME) {
+		offset = pack_reference(buffer, offset, references,
+				&reference_count, "apfs");
+		volattr &= ~ATTR_VOL_FSTYPENAME;
+	}
+
+	if (returned.volattr & ATTR_VOL_FSSUBTYPE) {
+		offset = pack_u32(buffer, offset, 0);
+		volattr &= ~ATTR_VOL_FSSUBTYPE;
+	}
+
+	if (returned.volattr & ATTR_VOL_OWNER) {
+		offset = pack_u32(buffer, offset, 0);
+		volattr &= ~ATTR_VOL_OWNER;
+	}
+
 	if (returned.volattr & ATTR_VOL_INFO) {
 		/* From the man pages, it looks like this does nothing */
 		volattr &= ~ATTR_VOL_INFO;
@@ -576,7 +706,9 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 	}
 
 	if (returned.dirattr & ATTR_DIR_MOUNTSTATUS) {
-		offset = pack_u32(buffer, offset, 0);
+		offset = pack_u32(buffer, offset,
+				strcmp(path, "/") == 0 ? DIR_MNTSTATUS_MNTPOINT
+						       : 0);
 		dirattr &= ~ATTR_DIR_MOUNTSTATUS;
 	}
 
