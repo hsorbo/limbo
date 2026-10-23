@@ -429,7 +429,7 @@ int
 sys_fstatat64(int fd, user_addr_t path, user_addr_t ub, int flag)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "fstatat64(%p, %p, %p, %p)\n", (void *)fd, (void *)path,
+	fprintf(stderr, "fstatat64(%p, \"%s\", %p, %p)\n", (void *)fd, (char *)path,
 			(void *)ub, (void *)flag);
 #endif
 	return stat_at(at_fd(fd), path, at_flags(flag), ub);
