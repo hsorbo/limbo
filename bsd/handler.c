@@ -60,6 +60,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <semaphore.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
@@ -94,6 +95,8 @@
 #define _ACCESS_EXECUTE_MASK (1 << 11)
 
 static __thread unsigned long current_syscall;
+
+static sem_t *semaphore(void *handle);
 
 int
 sys_nosys(void)
@@ -2394,59 +2397,109 @@ sys_shm_unlink(const char *name)
 	unimplemented();
 }
 
+#define SEMAPHORE_MAX 1024
+
+static pthread_mutex_t semaphores_lock = PTHREAD_MUTEX_INITIALIZER;
+static sem_t *semaphores[SEMAPHORE_MAX];
+
 user_addr_t
 sys_sem_open(const char *name, int oflag, int mode, int value)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "sem_open(%p, %p, %p, %p)\n", (void *)name,
+	fprintf(stderr, "sem_open(\"%s\", %p, %p, %p)\n", name,
 			(void *)oflag, (void *)mode, (void *)value);
 #endif
-	unimplemented();
+	sem_t *sem = sem_open(name, open_flags(oflag) & (O_CREAT | O_EXCL),
+			(mode_t)mode, (unsigned int)value);
+	if (sem == SEM_FAILED) {
+		return (user_addr_t)(intptr_t)err_map(errno);
+	}
+	int fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+	if (fd == -1 || fd >= SEMAPHORE_MAX) {
+		if (fd != -1) {
+			close(fd);
+		}
+		sem_close(sem);
+		return (user_addr_t)(intptr_t)_EMFILE;
+	}
+	pthread_mutex_lock(&semaphores_lock);
+	semaphores[fd] = sem;
+	pthread_mutex_unlock(&semaphores_lock);
+	return (user_addr_t)(intptr_t)fd;
 }
 
 int
-sys_sem_close(void *sem)
+sys_sem_close(void *handle)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "sem_close(%p)\n", (void *)sem);
+	fprintf(stderr, "sem_close(%p)\n", handle);
 #endif
-	unimplemented();
+	uintptr_t fd = (uintptr_t)handle;
+	if (fd >= SEMAPHORE_MAX) {
+		return _EINVAL;
+	}
+	pthread_mutex_lock(&semaphores_lock);
+	sem_t *sem = semaphores[fd];
+	semaphores[fd] = NULL;
+	pthread_mutex_unlock(&semaphores_lock);
+	if (sem == NULL) {
+		return _EINVAL;
+	}
+	sem_close(sem);
+	close((int)fd);
+	return 0;
 }
 
 int
 sys_sem_unlink(const char *name)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "sem_unlink(%p)\n", (void *)name);
+	fprintf(stderr, "sem_unlink(\"%s\")\n", name);
 #endif
-	unimplemented();
+	return errno_map(sem_unlink(name));
 }
 
 int
-sys_sem_wait(void *sem)
+sys_sem_wait(void *handle)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "sem_wait(%p)\n", (void *)sem);
+	fprintf(stderr, "sem_wait(%p)\n", handle);
 #endif
-	unimplemented();
+	sem_t *sem = semaphore(handle);
+	return sem != NULL ? errno_map(sem_wait(sem)) : _EINVAL;
 }
 
 int
-sys_sem_trywait(void *sem)
+sys_sem_trywait(void *handle)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "sem_trywait(%p)\n", (void *)sem);
+	fprintf(stderr, "sem_trywait(%p)\n", handle);
 #endif
-	unimplemented();
+	sem_t *sem = semaphore(handle);
+	return sem != NULL ? errno_map(sem_trywait(sem)) : _EINVAL;
 }
 
 int
-sys_sem_post(void *sem)
+sys_sem_post(void *handle)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "sem_post(%p)\n", (void *)sem);
+	fprintf(stderr, "sem_post(%p)\n", handle);
 #endif
-	unimplemented();
+	sem_t *sem = semaphore(handle);
+	return sem != NULL ? errno_map(sem_post(sem)) : _EINVAL;
+}
+
+static sem_t *
+semaphore(void *handle)
+{
+	uintptr_t fd = (uintptr_t)handle;
+	if (fd >= SEMAPHORE_MAX) {
+		return NULL;
+	}
+	pthread_mutex_lock(&semaphores_lock);
+	sem_t *sem = semaphores[fd];
+	pthread_mutex_unlock(&semaphores_lock);
+	return sem;
 }
 
 int

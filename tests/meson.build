@@ -24,6 +24,7 @@ guest_tests = [
   'mach.c',
   'paths.c',
   'sandbox.c',
+  'semaphore.c',
   'spawn.c',
   'sysinfo.c',
   'threads.c',
