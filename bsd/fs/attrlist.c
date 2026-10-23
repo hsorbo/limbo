@@ -273,8 +273,8 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		return 1;
 	}
 
-	char link[32], host_path[PATH_MAX] = {0};
-	snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+	char link[48], host_path[PATH_MAX] = {0};
+	snprintf(link, sizeof(link), "/proc/thread-self/fd/%d", fd);
 	readlink(link, host_path, sizeof(host_path) - 1);
 	const char *path = sysroot_guest_path(host_path);
 	fileid_remember(sysroot_file_id(s.st_dev, s.st_ino), path);

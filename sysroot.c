@@ -158,8 +158,8 @@ open_in_root(const char *path, int flags)
 static ssize_t
 read_fd_path(int fd, char *buffer)
 {
-	char link[32];
-	snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+	char link[48];
+	snprintf(link, sizeof(link), "/proc/thread-self/fd/%d", fd);
 	ssize_t length = readlink(link, buffer, PATH_MAX - 1);
 	close(fd);
 	if (length != -1) {

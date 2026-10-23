@@ -206,8 +206,8 @@ sys_sys_fcntl(int fd, int cmd, long arg)
 	case _F_SETPROTECTIONCLASS:
 		return 0;
 	case _F_GETPATH: {
-		char link[32], path[PATH_MAX];
-		snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+		char link[48], path[PATH_MAX];
+		snprintf(link, sizeof(link), "/proc/thread-self/fd/%d", fd);
 		ssize_t length = readlink(link, path, sizeof(path) - 1);
 		if (length == -1) {
 			return err_map(errno);
