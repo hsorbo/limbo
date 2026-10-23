@@ -222,7 +222,13 @@ sys_sysctl(int *name, uint32_t namelen, void *old, size_t *oldlenp, void *new,
 	}
 
 	if (new != NULL) {
-		unimplemented();
+#ifdef ENABLE_STRACE
+		fprintf(stderr, "  sysctl: setting {%d, %d} ignored\n", name[0],
+				namelen > 1 ? name[1] : 0);
+#endif
+		if (old == NULL) {
+			return 0;
+		}
 	}
 
 	if (namelen == 4 && name[0] == CTL_KERN && name[1] == KERN_PROC
@@ -318,7 +324,13 @@ sys_sys_sysctlbyname(const char *name, size_t namelen, void *old,
 			(void *)oldlenp, (void *)new, (void *)newlen);
 #endif
 	if (new != NULL) {
-		unimplemented();
+#ifdef ENABLE_STRACE
+		fprintf(stderr, "  sysctl: setting %.*s ignored\n", (int)namelen,
+				name);
+#endif
+		if (old == NULL) {
+			return 0;
+		}
 	}
 
 	const struct sysctl_node *node = lookup_name(name, namelen);
