@@ -478,7 +478,8 @@ export_body_port(mach_port_name_t name, mach_msg_type_name_t disposition,
 
 	struct ipc_entry *entry = lookup(name);
 	entry->port->global_id = broker_global_id(dest_guest_id,
-			0x80000000 | ++transfer_counter);
+			0x80000000 | (broker_client_guest_id() & 0x7ff) << 20
+					| (++transfer_counter & 0xfffff));
 	entry->port->remote = true;
 	entry->type = MACH_PORT_TYPE_SEND;
 	if (entry->urefs == 0) {
