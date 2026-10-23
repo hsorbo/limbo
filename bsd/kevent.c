@@ -1163,5 +1163,43 @@ sys_kqueue_workloop_ctl(
 	fprintf(stderr, "kqueue_workloop_ctl(%p, %p, %p, %p)\n", (void *)cmd,
 			(void *)options, (void *)addr, (void *)sz);
 #endif
-	unimplemented();
+	struct kqueue_workloop_params {
+		int kqwlp_version;
+		int kqwlp_flags;
+		uint64_t kqwlp_id;
+		int kqwlp_sched_pri;
+		int kqwlp_sched_pol;
+		int kqwlp_cpu_percent;
+		int kqwlp_cpu_refillms;
+	};
+	enum { KQ_WORKLOOP_CREATE = 1, KQ_WORKLOOP_DESTROY = 2 };
+
+	const struct kqueue_workloop_params *params = addr;
+	if (params == NULL || sz < sizeof(*params)) {
+		return _EINVAL;
+	}
+
+	int result = 0;
+	pthread_mutex_lock(&lock);
+	switch ((uintptr_t)cmd) {
+	case KQ_WORKLOOP_CREATE:
+		if (workloop_lookup(params->kqwlp_id,
+				    KEVENT_FLAG_DYNAMIC_KQ_MUST_NOT_EXIST)
+				== NULL) {
+			result = _EEXIST;
+		}
+		break;
+	case KQ_WORKLOOP_DESTROY:
+		if (workloop_lookup(params->kqwlp_id,
+				    KEVENT_FLAG_DYNAMIC_KQ_MUST_EXIST)
+				== NULL) {
+			result = _ENOENT;
+		}
+		break;
+	default:
+		result = _EINVAL;
+		break;
+	}
+	pthread_mutex_unlock(&lock);
+	return result;
 }
