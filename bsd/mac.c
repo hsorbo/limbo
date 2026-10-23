@@ -75,6 +75,23 @@ amfi_handle_cdhash_in_trustcache_syscall(
 	return 0;
 }
 
+struct amfi_launch_constraint_args {
+	uint32_t audit_token[8];
+	uint64_t constraint;
+	uint64_t constraint_length;
+	uint32_t *error;
+	uint64_t error_size;
+};
+
+static int
+amfi_handle_launch_constraint_syscall(struct amfi_launch_constraint_args *args)
+{
+	if (args->error != NULL && args->error_size >= sizeof(uint32_t)) {
+		*args->error = 0;
+	}
+	return 0;
+}
+
 static int
 amfi_handle_syscall(int call, void *arg)
 {
@@ -83,6 +100,8 @@ amfi_handle_syscall(int call, void *arg)
 		return amfi_handle_check_dyld_policy_self_syscall((long)arg);
 	case 95:
 		return amfi_handle_cdhash_in_trustcache_syscall(arg);
+	case 102:
+		return amfi_handle_launch_constraint_syscall(arg);
 	default:
 		unimplemented();
 	}
