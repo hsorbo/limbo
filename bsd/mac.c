@@ -93,6 +93,7 @@ quarantine_handle_syscall(int call)
 {
 	switch (call) {
 	case 82:
+	case 87:
 		return _ENOATTR;
 	default:
 		unimplemented();
