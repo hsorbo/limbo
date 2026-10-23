@@ -31,6 +31,9 @@
 #endif
 
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
 #ifdef __x86_64__
 #include <asm/prctl.h>
 #endif
@@ -177,6 +180,14 @@ static uint64_t rlimit_to_darwin(rlim_t value);
 static rlim_t rlimit_from_darwin(uint64_t value);
 static int wait_status(int status);
 static int wait_options(int options);
+static int translate_domain(int domain);
+static socklen_t translate_to_host_sockaddr(const void *guest, socklen_t len,
+		struct sockaddr_storage *host);
+static void translate_to_guest_sockaddr(
+		struct sockaddr_storage *addr, socklen_t len);
+static int translate_msg_flags(int flags);
+static bool translate_sockopt(
+		int level, int name, int *host_level, int *host_name);
 
 int
 sys_open(user_addr_t path, int flags, int mode)
@@ -454,7 +465,21 @@ sys_recvfrom(int s, void *buf, size_t len, int flags, void *from,
 			(void *)buf, (void *)len, (void *)flags, (void *)from,
 			(void *)fromlenaddr);
 #endif
-	unimplemented();
+	struct sockaddr_storage host;
+	socklen_t host_len = sizeof(host);
+	ssize_t received = recvfrom(s, buf, len, translate_msg_flags(flags),
+			from != NULL ? (struct sockaddr *)&host : NULL,
+			from != NULL ? &host_len : NULL);
+	if (received >= 0 && from != NULL && fromlenaddr != NULL) {
+		translate_to_guest_sockaddr(&host, host_len);
+		uint32_t guest_len = *(uint32_t *)fromlenaddr;
+		if (host_len < guest_len) {
+			guest_len = host_len;
+		}
+		memcpy(from, &host, guest_len);
+		*(uint32_t *)fromlenaddr = host_len;
+	}
+	return errno_map(received);
 }
 
 int
@@ -474,8 +499,19 @@ sys_getpeername(int fdes, void *asa, void *alen)
 	fprintf(stderr, "getpeername(%p, %p, %p)\n", (void *)fdes, (void *)asa,
 			(void *)alen);
 #endif
-	/* TODO: Handle */
-	return _EBADF;
+	struct sockaddr_storage host;
+	socklen_t host_len = sizeof(host);
+	int result = getpeername(fdes, (struct sockaddr *)&host, &host_len);
+	if (result == 0) {
+		translate_to_guest_sockaddr(&host, host_len);
+		uint32_t guest_len = *(uint32_t *)alen;
+		if (host_len < guest_len) {
+			guest_len = host_len;
+		}
+		memcpy(asa, &host, guest_len);
+		*(uint32_t *)alen = host_len;
+	}
+	return errno_map(result);
 }
 
 int
@@ -485,7 +521,19 @@ sys_getsockname(int fdes, void *asa, void *alen)
 	fprintf(stderr, "getsockname(%p, %p, %p)\n", (void *)fdes, (void *)asa,
 			(void *)alen);
 #endif
-	unimplemented();
+	struct sockaddr_storage host;
+	socklen_t host_len = sizeof(host);
+	int result = getsockname(fdes, (struct sockaddr *)&host, &host_len);
+	if (result == 0) {
+		translate_to_guest_sockaddr(&host, host_len);
+		uint32_t guest_len = *(uint32_t *)alen;
+		if (host_len < guest_len) {
+			guest_len = host_len;
+		}
+		memcpy(asa, &host, guest_len);
+		*(uint32_t *)alen = host_len;
+	}
+	return errno_map(result);
 }
 
 #define _F_OK 0
@@ -991,7 +1039,164 @@ sys_setpriority(int which, void *who, int prio)
 }
 
 #define xnu_PF_UNIX    1
+#define xnu_AF_INET    2
+#define xnu_AF_INET6   30
+#define xnu_SOCK_STREAM 1
 #define xnu_SOCK_DGRAM 2
+#define xnu_SOL_SOCKET 0xffff
+#define xnu_SO_REUSEADDR 0x0004
+#define xnu_SO_KEEPALIVE 0x0008
+#define xnu_SO_DONTROUTE 0x0010
+#define xnu_SO_BROADCAST 0x0020
+#define xnu_SO_LINGER    0x0080
+#define xnu_SO_OOBINLINE 0x0100
+#define xnu_SO_REUSEPORT 0x0200
+#define xnu_SO_SNDBUF    0x1001
+#define xnu_SO_RCVBUF    0x1002
+#define xnu_SO_SNDLOWAT  0x1003
+#define xnu_SO_RCVLOWAT  0x1004
+#define xnu_SO_ERROR     0x1007
+#define xnu_SO_TYPE      0x1008
+#define xnu_IPPROTO_TCP  6
+
+static int
+translate_domain(int domain)
+{
+	switch (domain) {
+	case xnu_PF_UNIX:
+		return AF_UNIX;
+	case xnu_AF_INET:
+		return AF_INET;
+	case xnu_AF_INET6:
+		return AF_INET6;
+	default:
+		return -1;
+	}
+}
+
+static socklen_t
+translate_to_host_sockaddr(const void *guest, socklen_t len,
+		struct sockaddr_storage *host)
+{
+	if (len > sizeof(*host)) {
+		len = sizeof(*host);
+	}
+	memcpy(host, guest, len);
+	uint8_t family = ((const uint8_t *)guest)[1];
+	host->ss_family = (family == xnu_AF_INET6) ? AF_INET6 : family;
+	return len;
+}
+
+static void
+translate_to_guest_sockaddr(struct sockaddr_storage *addr, socklen_t len)
+{
+	if (len < 2) {
+		return;
+	}
+	sa_family_t family = addr->ss_family;
+	uint8_t *bytes = (uint8_t *)addr;
+	bytes[0] = (uint8_t)len;
+	bytes[1] = (family == AF_INET6) ? xnu_AF_INET6 : (uint8_t)family;
+}
+
+#define xnu_MSG_OOB       0x1
+#define xnu_MSG_PEEK      0x2
+#define xnu_MSG_DONTROUTE 0x4
+#define xnu_MSG_WAITALL   0x40
+#define xnu_MSG_DONTWAIT  0x80
+
+static int
+translate_msg_flags(int flags)
+{
+	int host = 0;
+	if (flags & xnu_MSG_OOB) {
+		host |= MSG_OOB;
+	}
+	if (flags & xnu_MSG_PEEK) {
+		host |= MSG_PEEK;
+	}
+	if (flags & xnu_MSG_DONTROUTE) {
+		host |= MSG_DONTROUTE;
+	}
+	if (flags & xnu_MSG_WAITALL) {
+		host |= MSG_WAITALL;
+	}
+	if (flags & xnu_MSG_DONTWAIT) {
+		host |= MSG_DONTWAIT;
+	}
+	return host;
+}
+
+static bool
+translate_sockopt(int level, int name, int *host_level, int *host_name)
+{
+	if (level == xnu_IPPROTO_TCP) {
+		*host_level = IPPROTO_TCP;
+		switch (name) {
+		case 1:
+			*host_name = TCP_NODELAY;
+			return true;
+		case 0x10:
+			*host_name = TCP_KEEPIDLE;
+			return true;
+		case 0x101:
+			*host_name = TCP_KEEPINTVL;
+			return true;
+		case 0x102:
+			*host_name = TCP_KEEPCNT;
+			return true;
+		default:
+			return false;
+		}
+	}
+	if (level != xnu_SOL_SOCKET) {
+		return false;
+	}
+	*host_level = SOL_SOCKET;
+	switch (name) {
+	case xnu_SO_REUSEADDR:
+		*host_name = SO_REUSEADDR;
+		return true;
+	case xnu_SO_KEEPALIVE:
+		*host_name = SO_KEEPALIVE;
+		return true;
+	case xnu_SO_DONTROUTE:
+		*host_name = SO_DONTROUTE;
+		return true;
+	case xnu_SO_BROADCAST:
+		*host_name = SO_BROADCAST;
+		return true;
+	case xnu_SO_OOBINLINE:
+		*host_name = SO_OOBINLINE;
+		return true;
+	case xnu_SO_REUSEPORT:
+		*host_name = SO_REUSEPORT;
+		return true;
+	case xnu_SO_SNDBUF:
+		*host_name = SO_SNDBUF;
+		return true;
+	case xnu_SO_RCVBUF:
+		*host_name = SO_RCVBUF;
+		return true;
+	case xnu_SO_SNDLOWAT:
+		*host_name = SO_SNDLOWAT;
+		return true;
+	case xnu_SO_RCVLOWAT:
+		*host_name = SO_RCVLOWAT;
+		return true;
+	case xnu_SO_LINGER:
+		*host_name = SO_LINGER;
+		return true;
+	case xnu_SO_ERROR:
+		*host_name = SO_ERROR;
+		return true;
+	case xnu_SO_TYPE:
+		*host_name = SO_TYPE;
+		return true;
+	default:
+		return false;
+	}
+}
 
 int
 sys_socket(int domain, int type, int protocol)
@@ -1000,10 +1205,11 @@ sys_socket(int domain, int type, int protocol)
 	fprintf(stderr, "socket(%p, %p, %p)\n", (void *)domain, (void *)type,
 			(void *)protocol);
 #endif
-	if (domain == xnu_PF_UNIX && type == xnu_SOCK_DGRAM && protocol == 0) {
-		return socket(AF_UNIX, SOCK_DGRAM, 0);
+	int host_domain = translate_domain(domain);
+	if (host_domain == -1) {
+		unimplemented();
 	}
-	unimplemented();
+	return errno_map(socket(host_domain, type, protocol));
 }
 
 int
@@ -1013,7 +1219,10 @@ sys_connect(int s, void *name, void *namelen)
 	fprintf(stderr, "connect(%p, %p, %p)\n", (void *)s, (void *)name,
 			(void *)namelen);
 #endif
-	return err_map(ECONNREFUSED);
+	struct sockaddr_storage host;
+	socklen_t len = translate_to_host_sockaddr(
+			name, (socklen_t)(uintptr_t)namelen, &host);
+	return errno_map(connect(s, (struct sockaddr *)&host, len));
 }
 
 int
@@ -1043,7 +1252,12 @@ sys_setsockopt(int s, int level, int name, void *val, void *valsize)
 			(void *)level, (void *)name, (void *)val,
 			(void *)valsize);
 #endif
-	unimplemented();
+	int host_level, host_name;
+	if (!translate_sockopt(level, name, &host_level, &host_name)) {
+		return 0;
+	}
+	return errno_map(setsockopt(s, host_level, host_name, val,
+			(socklen_t)(uintptr_t)valsize));
 }
 
 int
@@ -1112,7 +1326,18 @@ sys_getsockopt(int s, int level, int name, void *val, void *avalsize)
 			(void *)level, (void *)name, (void *)val,
 			(void *)avalsize);
 #endif
-	unimplemented();
+	uint32_t *size = avalsize;
+	int host_level, host_name;
+	if (translate_sockopt(level, name, &host_level, &host_name)) {
+		socklen_t len = *size;
+		int result = getsockopt(s, host_level, host_name, val, &len);
+		*size = len;
+		return errno_map(result);
+	}
+	if (*size > 0) {
+		memset(val, 0, *size);
+	}
+	return 0;
 }
 
 user_ssize_t
@@ -1222,7 +1447,16 @@ sys_sendto(int s, void *buf, size_t len, int flags, void *to, void *tolen)
 			(void *)buf, (void *)len, (void *)flags, (void *)to,
 			(void *)tolen);
 #endif
-	return err_map(EBADF);
+	struct sockaddr_storage host;
+	struct sockaddr *dest = NULL;
+	socklen_t dest_len = 0;
+	if (to != NULL) {
+		dest_len = translate_to_host_sockaddr(
+				to, (socklen_t)(uintptr_t)tolen, &host);
+		dest = (struct sockaddr *)&host;
+	}
+	return errno_map(sendto(s, buf, len, translate_msg_flags(flags) | MSG_NOSIGNAL,
+			dest, dest_len));
 }
 
 int

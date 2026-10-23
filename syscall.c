@@ -102,6 +102,8 @@ asm(".text\n"
 int
 syscall_handler_install(void)
 {
+	signal(SIGPIPE, SIG_IGN);
+
 	struct sigaction act;
 	memset(&act, 0, sizeof(act));
 	sigemptyset(&act.sa_mask);
