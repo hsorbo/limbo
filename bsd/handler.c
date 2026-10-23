@@ -69,6 +69,7 @@
 #include "commpage.h"
 #include "fs/at.h"
 #include "codesign.h"
+#include "fs/fileid.h"
 #include "handler.h"
 #include "kevent.h"
 #include "osfmk/broker_client.h"
@@ -2112,7 +2113,7 @@ sys_fsgetpath_ext(user_addr_t buf, size_t bufsize, user_addr_t fsid,
 			(void *)bufsize, (void *)fsid, (void *)objid,
 			(void *)options);
 #endif
-	unimplemented();
+	return fileid_path(objid, buf, bufsize);
 }
 
 int
@@ -3162,9 +3163,7 @@ sys_fsgetpath(user_addr_t buf, size_t bufsize, user_addr_t fsid, uint64_t objid)
 	fprintf(stderr, "fsgetpath(%p, %p, %p, %p)\n", (void *)buf,
 			(void *)bufsize, (void *)fsid, (void *)objid);
 #endif
-	/* TODO: Only used by dyld for now so probably safe to be unimplemented
-	 * for now */
-	return 0;
+	return fileid_path(objid, buf, bufsize);
 }
 
 mach_port_name_t
