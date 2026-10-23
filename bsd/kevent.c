@@ -123,6 +123,8 @@ struct knote {
 	bool disabled;
 	bool manager;
 	bool woken;
+	bool waiting;
+	bool deleted;
 	uint64_t deadline;
 	uint64_t interval;
 };
@@ -503,6 +505,12 @@ kevent_register(struct kqueue *kq, const struct kevent_qos_s *change)
 		if (kn == NULL) {
 			return _ENOENT;
 		}
+		if (change->filter == EVFILT_WORKLOOP
+				&& (change->fflags & NOTE_WL_COMMANDS_MASK)
+						== NOTE_WL_SYNC_WAKE) {
+			kn->woken = true;
+			pthread_cond_broadcast(&sync_wakeup);
+		}
 		knote_detach(kn);
 		return 0;
 	}
@@ -577,6 +585,10 @@ knote_detach(struct knote *kn)
 			*p = kn->next;
 			break;
 		}
+	}
+	if (kn->waiting) {
+		kn->deleted = true;
+		return;
 	}
 	free(kn);
 }
@@ -824,9 +836,14 @@ workloop_state_matches(const struct kevent_qos_s *change)
 static void
 workloop_sync_wait(struct knote *kn)
 {
+	kn->waiting = true;
 	kqueue_request(kn->kq, false);
 	while (!kn->woken) {
 		pthread_cond_wait(&sync_wakeup, &lock);
+	}
+	kn->waiting = false;
+	if (kn->deleted) {
+		free(kn);
 	}
 }
 
