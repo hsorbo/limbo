@@ -154,7 +154,6 @@ struct reference {
 #define VOLUME_NAME "Macintosh HD"
 
 #define VOLUME_SIGNATURE              0x4244
-#define VOLUME_MOUNT_FLAGS            0x4480d000
 #define VOL_CAP_FMT_CASE_SENSITIVE    0x00000100
 #define VOLUME_FORMAT_CAPABILITIES    (0x039b6edf | VOL_CAP_FMT_CASE_SENSITIVE)
 #define VOLUME_FORMAT_VALID           0x07ffffff
@@ -223,6 +222,7 @@ static uint32_t pack_reference_data(char *buffer, uint32_t offset,
 		const struct reference *reference);
 static uint32_t pack_timespec(
 		char *buffer, uint32_t offset, const struct timespec *ts);
+static uint64_t parent_id(const char *path, const char *host_path);
 static uint32_t pack_u32(char *buffer, uint32_t offset, uint32_t value);
 static uint32_t pack_u64(char *buffer, uint32_t offset, uint64_t value);
 static const char *unpack_timespec(const char *buffer, struct timespec *ts);
@@ -376,6 +376,21 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		commonattr &= ~ATTR_CMN_OBJID;
 	}
 
+	if (returned.commonattr & ATTR_CMN_PAROBJID) {
+		fsobj_id_t id = {
+				.fid_objno = (uint32_t)parent_id(path, host_path),
+				.fid_generation = 0,
+		};
+		memcpy(buffer + offset, &id, sizeof(id));
+		offset += sizeof(fsobj_id_t);
+		commonattr &= ~ATTR_CMN_PAROBJID;
+	}
+
+	if (returned.commonattr & ATTR_CMN_SCRIPT) {
+		offset = pack_u32(buffer, offset, 0);
+		commonattr &= ~ATTR_CMN_SCRIPT;
+	}
+
 	if (returned.commonattr & ATTR_CMN_CRTIME) {
 		offset = pack_timespec(buffer, offset, &s.st_ctim);
 		commonattr &= ~ATTR_CMN_CRTIME;
@@ -432,6 +447,15 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 		commonattr &= ~ATTR_CMN_DOCUMENT_ID;
 	}
 
+	if (returned.commonattr & ATTR_CMN_USERACCESS) {
+		uint32_t access_mask = 0;
+		access_mask |= access(host_path, R_OK) == 0 ? R_OK : 0;
+		access_mask |= access(host_path, W_OK) == 0 ? W_OK : 0;
+		access_mask |= access(host_path, X_OK) == 0 ? X_OK : 0;
+		offset = pack_u32(buffer, offset, access_mask);
+		commonattr &= ~ATTR_CMN_USERACCESS;
+	}
+
 	if (returned.commonattr & ATTR_CMN_FILEID) {
 		uint64_t ino = sysroot_file_id(s.st_dev, s.st_ino);
 		memcpy(buffer + offset, &ino, sizeof(ino));
@@ -440,21 +464,7 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 	}
 
 	if (returned.commonattr & ATTR_CMN_PARENTID) {
-		char parent_path[PATH_MAX];
-		memcpy(parent_path, host_path, sizeof(parent_path));
-		strrchr(parent_path, '/')[1] = '\0';
-		struct stat parent = {0};
-		stat(parent_path, &parent);
-		uint64_t parent_id = strcmp(path, "/") == 0
-				? 1
-				: sysroot_file_id(parent.st_dev, parent.st_ino);
-		offset = pack_u64(buffer, offset, parent_id);
-		parent_path[strlen(parent_path) - 1] = '\0';
-		fileid_remember(parent_id,
-				parent_path[0] != '\0'
-						? sysroot_guest_path(
-								  parent_path)
-						: "/");
+		offset = pack_u64(buffer, offset, parent_id(path, host_path));
 		commonattr &= ~ATTR_CMN_PARENTID;
 	}
 
@@ -559,7 +569,7 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 	}
 
 	if (returned.volattr & ATTR_VOL_MOUNTFLAGS) {
-		uint32_t flags = VOLUME_MOUNT_FLAGS;
+		uint32_t flags = DARWIN_MOUNT_FLAGS;
 		memcpy(buffer + offset, &flags, sizeof(flags));
 		offset += sizeof(flags);
 		volattr &= ~ATTR_VOL_MOUNTFLAGS;
@@ -618,6 +628,8 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 						| ATTR_CMN_FSID
 						| ATTR_CMN_OBJTYPE
 						| ATTR_CMN_OBJID
+						| ATTR_CMN_PAROBJID
+						| ATTR_CMN_SCRIPT
 						| ATTR_CMN_CRTIME
 						| ATTR_CMN_MODTIME
 						| ATTR_CMN_CHGTIME
@@ -629,6 +641,7 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 						| ATTR_CMN_FLAGS
 						| ATTR_CMN_GEN_COUNT
 						| ATTR_CMN_DOCUMENT_ID
+						| ATTR_CMN_USERACCESS
 						| ATTR_CMN_FILEID
 						| ATTR_CMN_PARENTID
 						| ATTR_CMN_FULLPATH
@@ -862,6 +875,24 @@ pack_timespec(char *buffer, uint32_t offset, const struct timespec *ts)
 	int64_t value[2] = {ts->tv_sec, ts->tv_nsec};
 	memcpy(buffer + offset, value, sizeof(value));
 	return offset + sizeof(value);
+}
+
+static uint64_t
+parent_id(const char *path, const char *host_path)
+{
+	char parent_path[PATH_MAX];
+	memcpy(parent_path, host_path, sizeof(parent_path));
+	strrchr(parent_path, '/')[1] = '\0';
+	struct stat parent = {0};
+	stat(parent_path, &parent);
+	uint64_t id = strcmp(path, "/") == 0
+			? 1
+			: sysroot_file_id(parent.st_dev, parent.st_ino);
+	parent_path[strlen(parent_path) - 1] = '\0';
+	fileid_remember(id,
+			parent_path[0] != '\0' ? sysroot_guest_path(parent_path)
+						: "/");
+	return id;
 }
 
 static uint32_t
