@@ -67,6 +67,9 @@ static kern_return_t remap_copy(mach_vm_address_t *target_address,
 		mach_vm_size_t size, mach_vm_offset_t mask, int flags,
 		mach_vm_address_t src_address, vm_prot_t *protection);
 static vm_prot_t region_protection(mach_vm_address_t address);
+static bool region_find(mach_vm_address_t address, mach_vm_address_t *start,
+		mach_vm_size_t *size, vm_prot_t *protection, bool *shared,
+		uint64_t *offset);
 static kern_return_t map_entry(mach_vm_address_t *address, mach_vm_size_t size,
 		mach_vm_offset_t mask, int flags,
 		const struct memory_entry *entry, memory_object_offset_t offset,
@@ -482,7 +485,28 @@ mach_vm_region_recurse(vm_map_read_t target_task, mach_vm_address_t *address,
 			(void *)target_task, (void *)address, (void *)size,
 			(void *)nesting_depth, (void *)info, (void *)infoCnt);
 #endif
-	unimplemented();
+	if (*infoCnt < VM_REGION_SUBMAP_INFO_COUNT_64) {
+		return KERN_INVALID_ARGUMENT;
+	}
+	vm_prot_t protection;
+	bool shared;
+	uint64_t offset;
+	if (!region_find(*address, address, size, &protection, &shared,
+			    &offset)) {
+		return KERN_INVALID_ADDRESS;
+	}
+	vm_region_submap_info_data_64_t *submap = (void *)info;
+	*submap = (vm_region_submap_info_data_64_t){
+			.protection = protection,
+			.max_protection = VM_PROT_ALL,
+			.inheritance = VM_INHERIT_COPY,
+			.offset = offset,
+			.share_mode = shared ? SM_SHARED : SM_PRIVATE,
+			.user_tag = 0,
+	};
+	*nesting_depth = 0;
+	*infoCnt = VM_REGION_SUBMAP_INFO_COUNT_64;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -497,7 +521,60 @@ mach_vm_region(vm_map_read_t target_task, mach_vm_address_t *address,
 			(void *)flavor, (void *)info, (void *)infoCnt,
 			(void *)object_name);
 #endif
-	unimplemented();
+	if (flavor != VM_REGION_BASIC_INFO_64
+			|| *infoCnt < VM_REGION_BASIC_INFO_COUNT_64) {
+		unimplemented();
+	}
+	vm_prot_t protection;
+	bool shared;
+	uint64_t offset;
+	if (!region_find(*address, address, size, &protection, &shared,
+			    &offset)) {
+		return KERN_INVALID_ADDRESS;
+	}
+	vm_region_basic_info_data_64_t *basic = (void *)info;
+	*basic = (vm_region_basic_info_data_64_t){
+			.protection = protection,
+			.max_protection = VM_PROT_ALL,
+			.inheritance = VM_INHERIT_COPY,
+			.shared = shared,
+			.offset = offset,
+	};
+	*infoCnt = VM_REGION_BASIC_INFO_COUNT_64;
+	*object_name = MACH_PORT_NULL;
+	return KERN_SUCCESS;
+}
+
+static bool
+region_find(mach_vm_address_t address, mach_vm_address_t *start,
+		mach_vm_size_t *size, vm_prot_t *protection, bool *shared,
+		uint64_t *offset)
+{
+	FILE *maps = fopen("/proc/self/maps", "r");
+	char line[512];
+	bool found = false;
+	while (fgets(line, sizeof(line), maps) != NULL) {
+		unsigned long low, high, file_offset;
+		char perms[5];
+		if (sscanf(line, "%lx-%lx %4s %lx", &low, &high, perms,
+				    &file_offset)
+						== 4
+				&& high > address) {
+			*start = low;
+			*size = high - low;
+			*protection = ((perms[0] == 'r') ? VM_PROT_READ : 0)
+					| ((perms[1] == 'w') ? VM_PROT_WRITE
+							     : 0)
+					| ((perms[2] == 'x') ? VM_PROT_EXECUTE
+							     : 0);
+			*shared = perms[3] == 's';
+			*offset = file_offset;
+			found = true;
+			break;
+		}
+	}
+	fclose(maps);
+	return found;
 }
 
 kern_return_t
