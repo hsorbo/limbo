@@ -923,7 +923,8 @@ set_attributes(int dirfd, const char *path, int flags, void *alist,
 #endif
 	if ((alistp->commonattr
 			    & ~(ATTR_CMN_MODTIME | ATTR_CMN_ACCTIME
-					    | ATTR_CMN_ACCESSMASK | ATTR_CMN_FLAGS))
+					    | ATTR_CMN_ACCESSMASK | ATTR_CMN_FLAGS
+					    | ATTR_CMN_EXTENDED_SECURITY))
 			|| alistp->volattr || alistp->dirattr
 			|| alistp->fileattr || alistp->forkattr) {
 		unimplemented();

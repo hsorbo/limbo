@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/acl.h>
 #include <sys/attr.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -214,6 +215,10 @@ check_attributes(void)
 	CHECK(lchmod("attributes", 0600) == 0);
 	CHECK(stat("attributes", &st) == 0);
 	CHECK((st.st_mode & 0777) == 0600);
+	acl_t acl = acl_init(1);
+	CHECK(acl != NULL);
+	CHECK(acl_set_file("attributes", ACL_TYPE_EXTENDED, acl) == 0);
+	acl_free(acl);
 	CHECK(setattrlist("link", &times_request, times, sizeof(times), 0)
 			== -1);
 	CHECK(errno == ENOENT);
