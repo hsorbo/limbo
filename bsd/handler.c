@@ -339,7 +339,7 @@ int
 sys_unlink(user_addr_t path)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "unlink(%p)\n", (void *)path);
+	fprintf(stderr, "unlink(\"%s\")\n", (char *)path);
 #endif
 	char buffer[PATH_MAX];
 	return errno_map(unlink(
@@ -1443,7 +1443,7 @@ int
 sys_rename(char *from, char *to)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "rename(%p, %p)\n", (void *)from, (void *)to);
+	fprintf(stderr, "rename(\"%s\", \"%s\")\n", from, to);
 #endif
 	char from_buffer[PATH_MAX], to_buffer[PATH_MAX];
 	return errno_map(rename(sysroot_host_path(from, AT_SYMLINK_NOFOLLOW,
@@ -2108,8 +2108,8 @@ sys_open_dprotected_np(
 		user_addr_t path, int flags, int class, int dpflags, int mode)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "open_dprotected_np(%p, %p, %p, %p, %p)\n",
-			(void *)path, (void *)flags, (void *)class,
+	fprintf(stderr, "open_dprotected_np(\"%s\", %p, %p, %p, %p)\n",
+			(char *)path, (void *)flags, (void *)class,
 			(void *)dpflags, (void *)mode);
 #endif
 	char buffer[PATH_MAX];
@@ -3524,8 +3524,8 @@ int
 sys_renameat(int fromfd, char *from, int tofd, char *to)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "renameat(%p, %p, %p, %p)\n", (void *)fromfd,
-			(void *)from, (void *)tofd, (void *)to);
+	fprintf(stderr, "renameat(%p, \"%s\", %p, \"%s\")\n", (void *)fromfd,
+			from, (void *)tofd, to);
 #endif
 	return sys_renameatx_np(fromfd, from, tofd, to, 0);
 }
@@ -3633,7 +3633,7 @@ int
 sys_mkdirat(int fd, user_addr_t path, int mode)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "mkdirat(%p, %p, %p)\n", (void *)fd, (void *)path,
+	fprintf(stderr, "mkdirat(%p, \"%s\", %p)\n", (void *)fd, (char *)path,
 			(void *)mode);
 #endif
 	char buffer[PATH_MAX];
