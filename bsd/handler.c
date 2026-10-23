@@ -58,6 +58,7 @@
 #include <sys/prctl.h>
 #include <sys/random.h>
 #include <sys/resource.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <semaphore.h>
@@ -1068,7 +1069,39 @@ sys_select(int nd, uint32_t *in, uint32_t *ou, uint32_t *ex, void *tv)
 	fprintf(stderr, "select(%p, %p, %p, %p, %p)\n", (void *)nd, (void *)in,
 			(void *)ou, (void *)ex, (void *)tv);
 #endif
-	unimplemented();
+	if (nd < 0 || nd > FD_SETSIZE) {
+		return _EINVAL;
+	}
+	size_t bytes = ((size_t)nd + 31) / 32 * 4;
+	fd_set sets[3];
+	uint32_t *guest_sets[3] = {in, ou, ex};
+	for (int i = 0; i < 3; i++) {
+		FD_ZERO(&sets[i]);
+		if (guest_sets[i] != NULL) {
+			memcpy(&sets[i], guest_sets[i], bytes);
+		}
+	}
+	struct {
+		int64_t tv_sec;
+		int32_t tv_usec;
+	} *guest_timeout = tv;
+	struct timeval timeout;
+	if (guest_timeout != NULL) {
+		timeout.tv_sec = guest_timeout->tv_sec;
+		timeout.tv_usec = guest_timeout->tv_usec;
+	}
+	int result = select(nd, in != NULL ? &sets[0] : NULL,
+			ou != NULL ? &sets[1] : NULL, ex != NULL ? &sets[2] : NULL,
+			guest_timeout != NULL ? &timeout : NULL);
+	if (result == -1) {
+		return err_map(errno);
+	}
+	for (int i = 0; i < 3; i++) {
+		if (guest_sets[i] != NULL) {
+			memcpy(guest_sets[i], &sets[i], bytes);
+		}
+	}
+	return result;
 }
 
 int
