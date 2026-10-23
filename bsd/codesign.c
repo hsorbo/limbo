@@ -43,6 +43,7 @@
 enum {
 	CS_OPS_STATUS = 0,
 	CS_OPS_CDHASH = 5,
+	CS_OPS_PIDOFFSET = 6,
 	CS_OPS_ENTITLEMENTS_BLOB = 7,
 	CS_OPS_IDENTITY = 11,
 	CS_OPS_TEAMID = 14,
@@ -85,6 +86,7 @@ enum {
 struct signature {
 	uint8_t *bytes;
 	uint32_t size;
+	uint64_t slice_offset;
 	const uint8_t *code_directory;
 	const uint8_t *entitlements;
 	const uint8_t *der_entitlements;
@@ -155,6 +157,16 @@ codesign_ops(int32_t pid, uint32_t ops, void *buffer, size_t size)
 		r = 0;
 		break;
 	}
+	case CS_OPS_PIDOFFSET: {
+		uint64_t offset = signature.slice_offset;
+		if (size < sizeof(offset)) {
+			r = _EINVAL;
+			break;
+		}
+		memcpy(buffer, &offset, sizeof(offset));
+		r = 0;
+		break;
+	}
 	case CS_OPS_CDHASH: {
 		uint8_t hash[CS_CDHASH_LEN];
 		if (size < sizeof(hash)) {
@@ -189,6 +201,7 @@ signature_load(int32_t pid, struct signature *signature)
 	bool ok = read_slice(fd, &offset)
 			&& read_signature(fd, offset, signature);
 	close(fd);
+	signature->slice_offset = offset;
 	if (ok) {
 		index_blobs(signature);
 		ok = signature->code_directory != NULL;
