@@ -203,6 +203,8 @@ sys_sys_fcntl(int fd, int cmd, long arg)
 		return 0;
 	case _F_GETPROTECTIONCLASS:
 		return _ENOTSUP;
+	case _F_SETPROTECTIONCLASS:
+		return 0;
 	case _F_GETPATH: {
 		char link[32], path[PATH_MAX];
 		snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);

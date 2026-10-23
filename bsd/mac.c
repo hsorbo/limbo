@@ -114,9 +114,10 @@ quarantine_handle_syscall(int call)
 	case 80:
 	case 81:
 	case 82:
-	case 87:
 	case 180:
 		return _ENOATTR;
+	case 87:
+		return 0;
 	default:
 		unimplemented();
 	}
