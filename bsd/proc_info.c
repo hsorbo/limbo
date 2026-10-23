@@ -108,6 +108,9 @@ struct proc_bsdinfo {
 
 #define PROC_PIDPATHINFO 11
 
+#define PROC_PIDPLATFORMINFO 30
+#define PLATFORM_MACOS 1
+
 static int pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer,
 		int32_t buffersize);
 static int setcontrol(uint32_t flavor, user_addr_t buffer, int32_t buffersize);
@@ -213,6 +216,14 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 		}
 		memcpy(buffer, guest, length);
 		return length;
+	}
+	case PROC_PIDPLATFORMINFO: {
+		uint32_t platform = PLATFORM_MACOS;
+		if (buffersize < (int32_t)sizeof(platform)) {
+			return _ENOMEM;
+		}
+		memcpy(buffer, &platform, sizeof(platform));
+		return sizeof(platform);
 	}
 	case PROC_PIDCOALITIONINFO: {
 		uint64_t info[5] = {0};
