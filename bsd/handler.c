@@ -411,7 +411,7 @@ sys_setuid(void *uid)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "setuid(%p)\n", (void *)uid);
 #endif
-	unimplemented();
+	return 0;
 }
 
 int
@@ -967,7 +967,7 @@ sys_setgroups(uint32_t gidsetsize, void *gidset)
 	fprintf(stderr, "setgroups(%p, %p)\n", (void *)gidsetsize,
 			(void *)gidset);
 #endif
-	unimplemented();
+	return 0;
 }
 
 int
@@ -1420,7 +1420,7 @@ sys_setreuid(void *ruid, void *euid)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "setreuid(%p, %p)\n", (void *)ruid, (void *)euid);
 #endif
-	unimplemented();
+	return 0;
 }
 
 int
@@ -1429,7 +1429,7 @@ sys_setregid(void *rgid, void *egid)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "setregid(%p, %p)\n", (void *)rgid, (void *)egid);
 #endif
-	unimplemented();
+	return 0;
 }
 
 int
@@ -1764,7 +1764,7 @@ sys_setgid(void *gid)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "setgid(%p)\n", (void *)gid);
 #endif
-	unimplemented();
+	return 0;
 }
 
 int
@@ -1773,7 +1773,7 @@ sys_setegid(void *egid)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "setegid(%p)\n", (void *)egid);
 #endif
-	unimplemented();
+	return 0;
 }
 
 int
@@ -1782,7 +1782,7 @@ sys_seteuid(void *euid)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "seteuid(%p)\n", (void *)euid);
 #endif
-	unimplemented();
+	return 0;
 }
 
 int
@@ -2184,7 +2184,7 @@ sys_initgroups(uint32_t gidsetsize, void *gidset, int gmuid)
 	fprintf(stderr, "initgroups(%p, %p, %p)\n", (void *)gidsetsize,
 			(void *)gidset, (void *)gmuid);
 #endif
-	unimplemented();
+	return 0;
 }
 
 int
