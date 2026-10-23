@@ -44,6 +44,7 @@
 #include "broker.h"
 #include "broker_client.h"
 #include "libinfo.h"
+#include "mach_vm.h"
 #include "xpc_bootstrap.h"
 #include "bsd/kevent.h"
 #include "ipc.h"
@@ -1424,6 +1425,44 @@ ipc_port_type(mach_port_name_t name, mach_port_type_t *type)
 	}
 	pthread_mutex_unlock(&lock);
 	return kr;
+}
+
+kern_return_t
+ipc_port_names(mach_port_name_t **names, mach_port_type_t **types,
+		uint32_t *count)
+{
+	pthread_mutex_lock(&lock);
+	uint32_t used = 0;
+	for (uint32_t index = 1; index < entry_count; index++) {
+		if (entries[index].port != NULL) {
+			used++;
+		}
+	}
+	*names = NULL;
+	*types = NULL;
+	*count = used;
+	if (used != 0) {
+		mach_vm_address_t name_address = 0;
+		mach_vm_address_t type_address = 0;
+		_kernelrpc_mach_vm_allocate(0, &name_address,
+				used * sizeof(**names), VM_FLAGS_ANYWHERE);
+		_kernelrpc_mach_vm_allocate(0, &type_address,
+				used * sizeof(**types), VM_FLAGS_ANYWHERE);
+		*names = (mach_port_name_t *)name_address;
+		*types = (mach_port_type_t *)type_address;
+		uint32_t i = 0;
+		for (uint32_t index = 1; index < entry_count; index++) {
+			struct ipc_entry *entry = &entries[index];
+			if (entry->port == NULL) {
+				continue;
+			}
+			(*names)[i] = entry->port->name;
+			(*types)[i] = entry->type;
+			i++;
+		}
+	}
+	pthread_mutex_unlock(&lock);
+	return KERN_SUCCESS;
 }
 
 kern_return_t

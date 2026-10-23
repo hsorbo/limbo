@@ -42,7 +42,11 @@ mach_port_names(ipc_space_t task, mach_port_name_array_t *names,
 			(void *)names, (void *)namesCnt, (void *)types,
 			(void *)typesCnt);
 #endif
-	unimplemented();
+	uint32_t count;
+	kern_return_t kr = ipc_port_names(names, types, &count);
+	*namesCnt = count;
+	*typesCnt = count;
+	return kr;
 }
 
 kern_return_t
