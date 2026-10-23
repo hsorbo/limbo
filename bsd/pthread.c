@@ -33,6 +33,7 @@
 #include <mach/mach.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -58,6 +59,8 @@
 #define WORKQ_FEATURE_WORKLOOP 0x80
 
 #define PTHREAD_START_TSD_BASE_SET 0x10000000
+
+#define MAIN_THREAD_PRIORITY 0x8ff
 #define PTHREAD_START_SUSPENDED    0x20000000
 
 #define BSDTHREAD_CTL_SET_QOS                         0x10
@@ -191,6 +194,10 @@ sys_bsdthread_register(user_addr_t threadstart, user_addr_t wqthread,
 	registration.pthread_size = pthread_size;
 	registration.tsd_offset = d->tsd_offset;
 	registration.mach_thread_self_offset = d->mach_thread_self_offset;
+	if (data_size >= offsetof(struct pthread_registration_data, main_qos)
+					+ sizeof(d->main_qos)) {
+		d->main_qos = MAIN_THREAD_PRIORITY;
+	}
 
 	return PTHREAD_FEATURE_DISPATCHFUNC | PTHREAD_FEATURE_FINEPRIO
 			| PTHREAD_FEATURE_BSDTHREADCTL | PTHREAD_FEATURE_SETSELF
