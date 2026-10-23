@@ -220,7 +220,7 @@ mach_port_extract_right(ipc_space_t task, mach_port_name_t name,
 			(void *)task, (void *)name, (void *)msgt_name,
 			(void *)poly, (void *)polyPoly);
 #endif
-	unimplemented();
+	return ipc_port_extract_right(name, msgt_name, poly, polyPoly);
 }
 
 kern_return_t

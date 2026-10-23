@@ -103,6 +103,9 @@ kern_return_t ipc_port_mod_refs(mach_port_name_t name, mach_port_right_t right,
 		mach_port_delta_t delta);
 kern_return_t ipc_port_insert_right(mach_port_name_t name,
 		mach_port_name_t poly, mach_msg_type_name_t poly_poly);
+kern_return_t ipc_port_extract_right(mach_port_name_t name,
+		mach_msg_type_name_t msgt_name, mach_port_name_t *poly,
+		mach_msg_type_name_t *poly_poly);
 kern_return_t ipc_port_type(mach_port_name_t name, mach_port_type_t *type);
 kern_return_t ipc_port_get_refs(mach_port_name_t name, mach_port_right_t right,
 		mach_port_urefs_t *refs);
