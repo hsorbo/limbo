@@ -30,6 +30,7 @@
 #define _GNU_SOURCE
 #endif
 
+#include <ctype.h>
 #include <mach/mach.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -133,6 +134,7 @@ struct __darwin_kinfo_proc {
 
 static int read_hostname(void *old, size_t *oldlenp);
 static int read_boottime(void *old, size_t *oldlenp);
+static int read_bootsessionuuid(void *old, size_t *oldlenp);
 static int read_ncpu(void *old, size_t *oldlenp);
 static int read_memsize(void *old, size_t *oldlenp);
 static int read_cpusubtype(void *old, size_t *oldlenp);
@@ -162,6 +164,8 @@ static const struct sysctl_node nodes[] = {
 		{"kern.osversion", {CTL_KERN, KERN_OSVERSION}, SYSCTL_STRING,
 				.string = "26A428"},
 		{"kern.bootargs", {0, 0}, SYSCTL_STRING, .string = ""},
+		{"kern.bootsessionuuid", {0, 0}, SYSCTL_READER,
+				.reader = read_bootsessionuuid},
 		{"kern.osproductversion", {0, 0}, SYSCTL_STRING,
 				.string = "27.0"},
 		{"kern.secure_kernel", {0, 0}, SYSCTL_INT, .number = 0},
@@ -391,6 +395,23 @@ read_hostname(void *old, size_t *oldlenp)
 	char hostname[256];
 	gethostname(hostname, sizeof(hostname));
 	return read_bytes(hostname, strlen(hostname) + 1, old, oldlenp);
+}
+
+static int
+read_bootsessionuuid(void *old, size_t *oldlenp)
+{
+	char uuid[40] = "00000000-0000-0000-0000-000000000000";
+	FILE *boot_id = fopen("/proc/sys/kernel/random/boot_id", "r");
+	if (boot_id != NULL) {
+		if (fgets(uuid, sizeof(uuid), boot_id) != NULL) {
+			uuid[strcspn(uuid, "\n")] = '\0';
+		}
+		fclose(boot_id);
+	}
+	for (char *c = uuid; *c != '\0'; c++) {
+		*c = (char)toupper((unsigned char)*c);
+	}
+	return read_bytes(uuid, strlen(uuid) + 1, old, oldlenp);
 }
 
 static int
