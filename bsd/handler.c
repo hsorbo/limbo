@@ -873,6 +873,10 @@ sys_chroot(user_addr_t path)
 	return errno_map(chroot((char *)path));
 }
 
+#define _MS_ASYNC      0x1
+#define _MS_INVALIDATE 0x2
+#define _MS_SYNC       0x10
+
 int
 sys_msync(void *addr, size_t len, int flags)
 {
@@ -880,7 +884,10 @@ sys_msync(void *addr, size_t len, int flags)
 	fprintf(stderr, "msync(%p, %p, %p)\n", (void *)addr, (void *)len,
 			(void *)flags);
 #endif
-	unimplemented();
+	int linux_flags = ((flags & _MS_ASYNC) ? MS_ASYNC : 0)
+			| ((flags & _MS_INVALIDATE) ? MS_INVALIDATE : 0)
+			| ((flags & _MS_SYNC) ? MS_SYNC : 0);
+	return errno_map(msync(addr, len, linux_flags));
 }
 
 int
