@@ -131,6 +131,7 @@ quarantine_handle_syscall(int call)
 	}
 }
 
+#define SANDBOX_CONTAINER_PATH 4
 #define SANDBOX_EXTENSION_ISSUE 5
 #define SANDBOX_EXTENSION_FILE  0
 #define SANDBOX_EXTENSION_TOKEN_SIZE 0x3ff0
@@ -183,6 +184,8 @@ static int
 sandbox_handle_syscall(int call, void *arg)
 {
 	switch (call) {
+	case SANDBOX_CONTAINER_PATH:
+		return _ENOTSUP;
 	case SANDBOX_EXTENSION_ISSUE:
 		return sandbox_extension_issue(arg);
 	default:
