@@ -68,6 +68,7 @@
 
 #include "commpage.h"
 #include "fs/at.h"
+#include "fs/bsd_flags.h"
 #include "codesign.h"
 #include "fs/fileid.h"
 #include "handler.h"
@@ -197,6 +198,7 @@ static void translate_to_guest_sockaddr(
 static int translate_msg_flags(int flags);
 static bool translate_sockopt(
 		int level, int name, int *host_level, int *host_name);
+static int keep_bsd_flags(int fd, int flags);
 
 int
 sys_open(user_addr_t path, int flags, int mode)
@@ -574,9 +576,16 @@ int
 sys_chflags(char *path, int flags)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "chflags(%p, %p)\n", (void *)path, (void *)flags);
+	fprintf(stderr, "chflags(\"%s\", %p)\n", path, (void *)flags);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	int fd = open(sysroot_host_path(path, 0, buffer), O_PATH | O_CLOEXEC);
+	if (fd == -1) {
+		return err_map(errno);
+	}
+	int result = keep_bsd_flags(fd, flags);
+	close(fd);
+	return result;
 }
 
 int
@@ -585,8 +594,14 @@ sys_fchflags(int fd, int flags)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "fchflags(%p, %p)\n", (void *)fd, (void *)flags);
 #endif
-	if (flags != 0) {
-		unimplemented();
+	return keep_bsd_flags(fd, flags);
+}
+
+static int
+keep_bsd_flags(int fd, int flags)
+{
+	if (bsd_flags_set(fd, (uint32_t)flags) == -1 && errno != EOPNOTSUPP) {
+		return err_map(errno);
 	}
 	return 0;
 }
