@@ -23,6 +23,7 @@ guest_tests = [
   'kqueue.c',
   'mach.c',
   'paths.c',
+  'sandbox.c',
   'spawn.c',
   'sysinfo.c',
   'threads.c',
