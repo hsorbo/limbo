@@ -1373,6 +1373,42 @@ ipc_port_insert_right(mach_port_name_t name, mach_port_name_t poly,
 }
 
 kern_return_t
+ipc_port_extract_right(mach_port_name_t name, mach_msg_type_name_t msgt_name,
+		mach_port_name_t *poly, mach_msg_type_name_t *poly_poly)
+{
+	pthread_mutex_lock(&lock);
+	kern_return_t kr = KERN_SUCCESS;
+	struct ipc_entry *entry = lookup(name);
+	if (entry == NULL) {
+		kr = KERN_INVALID_NAME;
+	} else if (!has_right(entry, msgt_name)) {
+		kr = KERN_INVALID_RIGHT;
+	} else {
+		switch (msgt_name) {
+		case MACH_MSG_TYPE_MOVE_SEND:
+			if (--entry->urefs == 0) {
+				entry->type &= ~MACH_PORT_TYPE_SEND;
+			}
+			break;
+		case MACH_MSG_TYPE_MOVE_SEND_ONCE:
+			if (--entry->sorights == 0) {
+				entry->type &= ~MACH_PORT_TYPE_SEND_ONCE;
+			}
+			break;
+		case MACH_MSG_TYPE_MOVE_RECEIVE:
+			entry->type &= ~MACH_PORT_TYPE_RECEIVE;
+			break;
+		default:
+			break;
+		}
+		*poly = name;
+		*poly_poly = received_type(msgt_name);
+	}
+	pthread_mutex_unlock(&lock);
+	return kr;
+}
+
+kern_return_t
 ipc_port_type(mach_port_name_t name, mach_port_type_t *type)
 {
 	pthread_mutex_lock(&lock);
