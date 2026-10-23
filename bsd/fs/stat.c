@@ -40,6 +40,7 @@
 #include <unistd.h>
 
 #include "at.h"
+#include "bsd_flags.h"
 #include "bsd/xnu-errno.h"
 #include "device.h"
 #include "sysroot.h"
@@ -182,13 +183,16 @@ static int
 stat_at(int fd, const char *path, int flags, struct __darwin_user64_stat64 *ub)
 {
 	char buffer[PATH_MAX];
+	const char *host_path = sysroot_host_path(path, flags, buffer);
 	struct statx tmp;
-	if (statx(fd, sysroot_host_path(path, flags, buffer), flags,
-			    STATX_BASIC_STATS | STATX_BTIME, &tmp)
+	if (statx(fd, host_path, flags, STATX_BASIC_STATS | STATX_BTIME, &tmp)
 			== -1) {
 		return err_map(errno);
 	}
 	convert_statx(&tmp, ub);
+	if (!S_ISLNK(tmp.stx_mode)) {
+		ub->st_flags = bsd_flags_get_at(fd, host_path, flags);
+	}
 	return 0;
 }
 

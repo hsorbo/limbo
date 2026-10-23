@@ -43,6 +43,7 @@
 #include <unistd.h>
 
 #include "at.h"
+#include "bsd_flags.h"
 #include "bsd/xnu-errno.h"
 #include "device.h"
 #include "fileid.h"
@@ -433,7 +434,8 @@ pack_attributes(int fd, const struct __darwin_attrlist *alistp,
 	}
 
 	if (returned.commonattr & ATTR_CMN_FLAGS) {
-		offset = pack_u32(buffer, offset, 0);
+		offset = pack_u32(buffer, offset,
+				S_ISLNK(s.st_mode) ? 0 : bsd_flags_get(fd));
 		commonattr &= ~ATTR_CMN_FLAGS;
 	}
 

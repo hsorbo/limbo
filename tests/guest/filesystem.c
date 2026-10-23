@@ -223,6 +223,22 @@ check_attributes(void)
 			== -1);
 	CHECK(errno == ENOENT);
 	CHECK(unlink("link") == 0);
+
+	CHECK(chflags("attributes", UF_HIDDEN) == 0);
+	CHECK(chflags("missing", UF_HIDDEN) == -1 && errno == ENOENT);
+	struct stat flagged;
+	CHECK(stat("attributes", &flagged) == 0);
+	CHECK(flagged.st_flags == UF_HIDDEN);
+	CHECK(listxattr("attributes", NULL, 0, 0) == 0);
+	fd = open("attributes", O_RDONLY);
+	CHECK(fd != -1);
+	CHECK(fchflags(fd, SF_NOUNLINK) == 0);
+	CHECK(fstat(fd, &flagged) == 0);
+	CHECK(flagged.st_flags == SF_NOUNLINK);
+	CHECK(fchflags(fd, 0) == 0);
+	CHECK(fstat(fd, &flagged) == 0);
+	CHECK(flagged.st_flags == 0);
+	CHECK(close(fd) == 0);
 	CHECK(unlink("attributes") == 0);
 }
 
