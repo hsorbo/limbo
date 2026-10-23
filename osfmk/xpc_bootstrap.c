@@ -34,6 +34,7 @@
 #include "broker.h"
 #include "broker_client.h"
 #include "ipc.h"
+#include <stdio.h>
 #include "xpc_bootstrap.h"
 
 #define XPC_SERIAL_MAGIC 0x40585043
@@ -139,6 +140,9 @@ xpc_bootstrap_serve(mach_msg_header_t *request)
 static bool
 look_up(mach_msg_header_t *request, const char *name)
 {
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "bootstrap_look_up(%s)\n", name);
+#endif
 	if (strcmp(name, "com.apple.system.opendirectoryd.libinfo") == 0) {
 		reply_with_port(request, ipc_libinfo_self(),
 				MACH_MSG_TYPE_COPY_SEND, XPC_SERIAL_MACH_SEND,
@@ -158,6 +162,9 @@ look_up(mach_msg_header_t *request, const char *name)
 static bool
 check_in(mach_msg_header_t *request, const char *name)
 {
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "bootstrap_check_in(%s)\n", name);
+#endif
 	mach_port_name_t service = ipc_service_check_in(name);
 	reply_with_port(request, service, MACH_MSG_TYPE_MOVE_RECEIVE,
 			XPC_SERIAL_MACH_RECV, false);
