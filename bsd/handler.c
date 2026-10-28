@@ -3869,6 +3869,17 @@ sys_proc_rlimit_control(uint64_t pid, int flavor, void *arg)
 	fprintf(stderr, "proc_rlimit_control(%p, %p, %p)\n", (void *)pid,
 			(void *)flavor, (void *)arg);
 #endif
+
+	return 0;
+}
+
+int
+sys_coalition_policy_set(uint64_t cid, int flavor, uint32_t value)
+{
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "coalition_policy_set(%p, %p, %p)\n", (void *)cid,
+			(void *)(intptr_t)flavor, (void *)(uintptr_t)value);
+#endif
 	return 0;
 }
 
@@ -5847,6 +5858,8 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 	case 0x226:
 		return sys_map_with_linking_np(
 				(void *)arg1, arg2, (void *)arg3, arg4);
+	case 0x22c:
+		return sys_coalition_policy_set(arg1, arg2, arg3);
 	default:
 		fprintf(stderr, ">> Missing BSD system call: %#lx\n", syscall);
 		unimplemented();
