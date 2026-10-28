@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -138,6 +139,28 @@ struct darwin_flocktimeout {
 	struct timespec timeout;
 };
 
+#define _F_ALLOCATECONTIG  0x2
+#define _F_ALLOCATEALL     0x4
+#define _F_ALLOCATEPERSIST 0x8
+#define _F_PEOFPOSMODE     3
+#define _F_VOLPOSMODE      4
+
+struct darwin_fstore {
+	uint32_t fst_flags;
+	int32_t fst_posmode;
+	int64_t fst_offset;
+	int64_t fst_length;
+	int64_t fst_bytesalloc;
+};
+
+struct darwin_fpunchhole {
+	uint32_t fp_flags;
+	uint32_t reserved;
+	int64_t fp_offset;
+	int64_t fp_length;
+};
+
+static int preallocate(int fd, struct darwin_fstore *store);
 static int record_lock_timeout(
 		int fd, int cmd, struct darwin_flocktimeout *lock);
 static int record_lock(int fd, int cmd, struct darwin_flock *lock);
@@ -219,11 +242,69 @@ sys_sys_fcntl(int fd, int cmd, long arg)
 	} break;
 	case _F_CHECK_LV:
 		return 0;
+	/* Signatures are taken, as the code isn't checked against them */
+	case _F_ADDSIGS:
+	case _F_ADDFILESIGS:
+	case _F_ADDFILESIGS_FOR_DYLD_SIM:
+	case _F_ADDFILESUPPL:
+		return 0;
 	case _F_SPECULATIVE_READ:
 		return 0;
+	case _F_SETSTATICCONTENT:
+		return 0;
+	case _F_GETNOSIGPIPE:
+		return 0;
+	case _F_RECYCLE:
+		return 0;
+	case _F_FLUSH_DATA:
+		return errno_map(fdatasync(fd));
+	case _F_PREALLOCATE:
+		return preallocate(fd, (void *)arg);
+	case _F_PUNCHHOLE: {
+		const struct darwin_fpunchhole *hole = (void *)arg;
+		if (hole->fp_flags != 0) {
+			return _EINVAL;
+		}
+		return errno_map(fallocate(fd,
+				FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+				hole->fp_offset, hole->fp_length));
+	}
 	}
 
 	unimplemented();
+}
+
+static int
+preallocate(int fd, struct darwin_fstore *store)
+{
+	if (store->fst_flags
+			& ~(_F_ALLOCATECONTIG | _F_ALLOCATEALL
+					| _F_ALLOCATEPERSIST)) {
+		return _EINVAL;
+	}
+	if (store->fst_length < 0) {
+		return _EINVAL;
+	}
+	off_t start = store->fst_offset;
+	if (store->fst_posmode == _F_PEOFPOSMODE) {
+		struct stat s;
+		if (fstat(fd, &s) == -1) {
+			return err_map(errno);
+		}
+		start += (off_t)s.st_blocks * 512;
+	} else if (store->fst_posmode != _F_VOLPOSMODE) {
+		return _EINVAL;
+	}
+	store->fst_bytesalloc = 0;
+	if (store->fst_length == 0) {
+		return 0;
+	}
+	if (fallocate(fd, FALLOC_FL_KEEP_SIZE, start, store->fst_length)
+			== -1) {
+		return err_map(errno);
+	}
+	store->fst_bytesalloc = store->fst_length;
+	return 0;
 }
 
 static int
