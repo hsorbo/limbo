@@ -38,6 +38,7 @@ void syscall_set_rdx(uint64_t value);
 void syscall_signal_handler(int sig, siginfo_t *info, void *ucontext);
 void syscall_report_fault(int sig, siginfo_t *info, void *context);
 void syscall_print_guest_chain(const mcontext_t *mc);
+void syscall_print_trap_chain(void);
 ucontext_t *syscall_trap_context(void);
 void syscall_trap_reset(void);
 void syscall_keep_context(void);

@@ -4,6 +4,9 @@
 /* Disable MIG typechecking */
 #define __MigTypeCheck 0
 
+/* The guest's call chain into the system call, from limbo, whose tests and
+ * broker have none */
+extern void syscall_print_trap_chain(void) __attribute__((weak));
 static inline void __attribute__ ((noreturn))
 limbo_unimplemented(const char *function, int line)
 {
@@ -21,6 +24,9 @@ limbo_unimplemented(const char *function, int line)
 	write(2, function, strlen(function));
 	write(2, ":", 1);
 	write(2, digits + i, sizeof(digits) - i);
+	if (syscall_print_trap_chain != 0) {
+		syscall_print_trap_chain();
+	}
 	abort();
 }
 #define unimplemented() limbo_unimplemented(__func__, __LINE__)
