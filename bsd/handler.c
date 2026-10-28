@@ -3495,7 +3495,7 @@ sys_guarded_close_np(int fd, void *guard)
 	fprintf(stderr, "guarded_close_np(%p, %p)\n", (void *)fd,
 			(void *)guard);
 #endif
-	return errno_map(close(fd));
+	return sys_sys_close(fd);
 }
 
 int
@@ -3517,7 +3517,16 @@ sys_change_fdguard_np(int fd, void *guard, uint32_t guardflags, void *nguard,
 			(void *)fd, (void *)guard, (void *)guardflags,
 			(void *)nguard, (void *)nguardflags, (void *)fdflagsp);
 #endif
-	unimplemented();
+
+	int old = fcntl(fd, F_GETFD);
+	if (old == -1) {
+		return err_map(errno);
+	}
+	if (fdflagsp != NULL) {
+		fcntl(fd, F_SETFD, (old & ~FD_CLOEXEC) | (*fdflagsp & FD_CLOEXEC));
+		*fdflagsp = old & FD_CLOEXEC;
+	}
+	return 0;
 }
 
 int
@@ -3894,7 +3903,7 @@ sys_guarded_write_np(int fd, void *guard, user_addr_t cbuf, user_size_t nbyte)
 	fprintf(stderr, "guarded_write_np(%p, %p, %p, %p)\n", (void *)fd,
 			(void *)guard, (void *)cbuf, (void *)nbyte);
 #endif
-	unimplemented();
+	return sys_write(fd, cbuf, nbyte);
 }
 
 user_ssize_t
