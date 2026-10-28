@@ -310,6 +310,24 @@ codesign_platform(int32_t pid)
 	return platform;
 }
 
+int
+codesign_file_platform(int fd, uint64_t offset, bool *platform)
+{
+	struct signature signature;
+	if (!read_signature(fd, offset, &signature)) {
+		return _ENOENT;
+	}
+	index_blobs(&signature);
+	if (signature.code_directory == NULL) {
+		free(signature.bytes);
+		return _ENOENT;
+	}
+
+	*platform = signature.code_directory[38] != 0;
+	free(signature.bytes);
+	return 0;
+}
+
 static bool
 read_signature(int fd, uint64_t offset, struct signature *signature)
 {

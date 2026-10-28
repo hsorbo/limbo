@@ -27,9 +27,17 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 int codesign_ops(int32_t pid, uint32_t ops, void *buffer, size_t size);
 
 uint32_t codesign_platform(int32_t pid);
+
+/*
+ * Whether the slice at OFFSET of the file open as FD is signed as a platform
+ * binary, as fcntl(F_GETSIGSINFO) asks on dyld's behalf: 0, or _ENOENT when
+ * the slice has no signature
+ */
+int codesign_file_platform(int fd, uint64_t offset, bool *platform);
