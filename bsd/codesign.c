@@ -25,7 +25,12 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -188,6 +193,38 @@ codesign_ops(int32_t pid, uint32_t ops, void *buffer, size_t size)
 	}
 	free(signature.bytes);
 	return r;
+}
+
+bool
+codesign_entitled(int32_t pid, const char *entitlement)
+{
+	struct signature signature;
+	if (!signature_load(pid, &signature)) {
+		return false;
+	}
+	bool entitled = false;
+	if (signature.entitlements != NULL) {
+		/* The XML property list after the blob's header */
+		uint32_t length = big(signature.entitlements + 4);
+		const char *xml = (const char *)signature.entitlements + 8;
+		size_t size = length > 8 ? length - 8 : 0;
+		char key[256];
+		int key_length = snprintf(key, sizeof(key), "<key>%s</key>",
+				entitlement);
+		const char *found = key_length > 0 && (size_t)key_length < sizeof(key)
+				? memmem(xml, size, key, (size_t)key_length)
+				: NULL;
+		if (found != NULL) {
+			const char *value = found + key_length;
+			const char *end = xml + size;
+			while (value < end && isspace((unsigned char)*value)) {
+				value++;
+			}
+			entitled = end - value >= 7 && memcmp(value, "<true/>", 7) == 0;
+		}
+	}
+	free(signature.bytes);
+	return entitled;
 }
 
 static bool

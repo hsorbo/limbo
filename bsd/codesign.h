@@ -41,3 +41,6 @@ uint32_t codesign_platform(int32_t pid);
  * the slice has no signature
  */
 int codesign_file_platform(int fd, uint64_t offset, bool *platform);
+
+/* Whether the process's executable has ENTITLEMENT, as true */
+bool codesign_entitled(int32_t pid, const char *entitlement);
