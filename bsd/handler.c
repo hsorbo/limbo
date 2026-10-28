@@ -4006,7 +4006,19 @@ sys_memorystatus_get_level(user_addr_t level)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "memorystatus_get_level(%p)\n", (void *)level);
 #endif
-	unimplemented();
+
+	unsigned long long total = 0, available = 0;
+	FILE *meminfo = fopen("/proc/meminfo", "r");
+	if (meminfo != NULL) {
+		char line[256];
+		while (fgets(line, sizeof(line), meminfo) != NULL) {
+			sscanf(line, "MemTotal: %llu kB", &total);
+			sscanf(line, "MemAvailable: %llu kB", &available);
+		}
+		fclose(meminfo);
+	}
+	*(int *)level = (total != 0) ? (int)(available * 100 / total) : 100;
+	return 0;
 }
 
 int
