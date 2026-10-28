@@ -78,6 +78,7 @@
 
 #include "commpage.h"
 #include "signals.h"
+#include "tty.h"
 #include "fs/at.h"
 #include "fs/bsd_flags.h"
 #include "codesign.h"
@@ -952,6 +953,10 @@ sys_ioctl(int fd, uint64_t com, void *data)
 		return 0;
 	}
 	unimplemented(); */
+	int result = tty_ioctl(fd, com, data);
+	if (result != 1) {
+		return result;
+	}
 	return 0;
 }
 
