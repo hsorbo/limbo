@@ -423,16 +423,54 @@ remap_share(mach_vm_address_t *target_address, mach_vm_size_t size,
 	return kr;
 }
 
+static bool
+copy_readable(int fd, mach_vm_address_t address, mach_vm_size_t size,
+		bool *shared)
+{
+	*shared = false;
+	FILE *maps = fopen("/proc/thread-self/maps", "r");
+	if (maps == NULL) {
+		return false;
+	}
+	char line[512];
+	bool ok = true;
+	mach_vm_address_t end = address + size;
+	while (ok && fgets(line, sizeof(line), maps) != NULL) {
+		unsigned long from, to;
+		char perms[5];
+		if (sscanf(line, "%lx-%lx %4s", &from, &to, perms) != 3
+				|| to <= address || from >= end) {
+			continue;
+		}
+		*shared |= perms[3] == 's';
+		if (perms[0] != 'r') {
+			continue;
+		}
+		mach_vm_address_t first = from > address ? from : address;
+		mach_vm_address_t last = to < end ? to : end;
+		ok = pwrite(fd, (void *)first, last - first,
+				     (off_t)(first - address))
+				== (ssize_t)(last - first);
+	}
+	fclose(maps);
+	return ok;
+}
+
 static int
 share_in_place(mach_vm_address_t address, mach_vm_size_t size,
 		vm_prot_t protection)
 {
-	int fd = copy_range(address, size);
-	if (fd != -1
-			&& mmap((void *)address, size, protection,
-					   MAP_SHARED | MAP_FIXED, fd, 0)
-					== MAP_FAILED) {
-		close(fd);
+	bool shared;
+	int fd = memfd_create("remap", MFD_CLOEXEC);
+	if (fd == -1 || ftruncate(fd, size) == -1
+			|| !copy_readable(fd, address, size, &shared)
+			|| (!shared
+					&& mmap((void *)address, size, protection,
+							   MAP_SHARED | MAP_FIXED, fd, 0)
+							== MAP_FAILED)) {
+		if (fd != -1) {
+			close(fd);
+		}
 		return -1;
 	}
 	return fd;
@@ -637,10 +675,10 @@ mach_make_memory_entry(vm_map_t target_task, memory_object_size_t *size,
 static int
 copy_range(mach_vm_address_t address, mach_vm_size_t size)
 {
+	bool shared;
 	int fd = memfd_create("memory entry", MFD_CLOEXEC);
 	if (fd == -1 || ftruncate(fd, size) == -1
-			|| pwrite(fd, (void *)address, size, 0)
-					!= (ssize_t)size) {
+			|| !copy_readable(fd, address, size, &shared)) {
 		if (fd != -1) {
 			close(fd);
 		}
