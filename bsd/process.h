@@ -29,6 +29,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 struct process {
 	int32_t pid;
@@ -54,3 +55,6 @@ void process_start_time(
 uint64_t process_ticks_to_nanoseconds(uint64_t ticks);
 
 bool process_executable_path(int32_t pid, char *path);
+
+/* The process's arguments, NUL-separated, as /proc has them */
+ssize_t process_cmdline(int32_t pid, char *buffer, size_t size);
