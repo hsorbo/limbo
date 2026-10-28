@@ -948,7 +948,12 @@ task_identity_token_get_task_port(task_id_token_t token, task_flavor_t flavor,
 	fprintf(stderr, "task_identity_token_get_task_port(%p, %p, %p)\n",
 			(void *)token, (void *)flavor, (void *)task_port);
 #endif
-	unimplemented();
+
+	if (flavor < TASK_FLAVOR_CONTROL || flavor > TASK_FLAVOR_NAME) {
+		return KERN_INVALID_ARGUMENT;
+	}
+	*task_port = token;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
