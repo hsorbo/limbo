@@ -29,6 +29,7 @@
 #include <mach/mach.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/sysinfo.h>
 #include <unistd.h>
 
@@ -147,7 +148,67 @@ host_processor_info(host_t host, processor_flavor_t flavor,
 			(void *)out_processor_count, (void *)out_processor_info,
 			(void *)out_processor_infoCnt);
 #endif
-	unimplemented();
+
+	natural_t count = 0;
+	natural_t ticks[256][CPU_STATE_MAX];
+	FILE *stat = fopen("/proc/stat", "r");
+	if (stat != NULL) {
+		char line[512];
+		while (count < 256 && fgets(line, sizeof(line), stat) != NULL) {
+			unsigned long long user, nice, system, idle;
+			if (strncmp(line, "cpu", 3) != 0 || line[3] == ' '
+					|| sscanf(line, "%*s %llu %llu %llu %llu",
+							   &user, &nice, &system,
+							   &idle)
+							!= 4) {
+				continue;
+			}
+			ticks[count][CPU_STATE_USER] = (natural_t)user;
+			ticks[count][CPU_STATE_NICE] = (natural_t)nice;
+			ticks[count][CPU_STATE_SYSTEM] = (natural_t)system;
+			ticks[count][CPU_STATE_IDLE] = (natural_t)idle;
+			count++;
+		}
+		fclose(stat);
+	}
+	if (count == 0) {
+		return KERN_FAILURE;
+	}
+
+	size_t words;
+	switch (flavor) {
+	case PROCESSOR_CPU_LOAD_INFO:
+		words = PROCESSOR_CPU_LOAD_INFO_COUNT;
+		break;
+	case PROCESSOR_BASIC_INFO:
+		words = PROCESSOR_BASIC_INFO_COUNT;
+		break;
+	default:
+		return KERN_INVALID_ARGUMENT;
+	}
+	size_t size = (size_t)count * words * sizeof(natural_t);
+	natural_t *info = mmap(NULL, size, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (info == MAP_FAILED) {
+		return KERN_RESOURCE_SHORTAGE;
+	}
+	for (natural_t i = 0; i < count; i++) {
+		natural_t *entry = info + i * words;
+		if (flavor == PROCESSOR_CPU_LOAD_INFO) {
+			memcpy(entry, ticks[i], sizeof(ticks[i]));
+		} else {
+			processor_basic_info_t basic = (processor_basic_info_t)entry;
+			basic->cpu_type = HOST_CPU_TYPE;
+			basic->cpu_subtype = shared_cache_cpu_subtype;
+			basic->running = TRUE;
+			basic->slot_num = (int)i;
+			basic->is_master = i == 0;
+		}
+	}
+	*out_processor_count = count;
+	*out_processor_info = (processor_info_array_t)info;
+	*out_processor_infoCnt = (mach_msg_type_number_t)(count * words);
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -240,6 +301,33 @@ mach_memory_object_memory_entry_64(host_t host, boolean_t internal,
 	unimplemented();
 }
 
+static kern_return_t
+host_cpu_load(host_info_t host_info_out,
+		mach_msg_type_number_t *host_info_outCnt)
+{
+	if (*host_info_outCnt < HOST_CPU_LOAD_INFO_COUNT) {
+		return KERN_FAILURE;
+	}
+	unsigned long long user, nice, system, idle;
+	FILE *stat = fopen("/proc/stat", "r");
+	if (stat == NULL) {
+		return KERN_FAILURE;
+	}
+	int fields = fscanf(stat, "cpu %llu %llu %llu %llu", &user, &nice,
+			&system, &idle);
+	fclose(stat);
+	if (fields != 4) {
+		return KERN_FAILURE;
+	}
+	host_cpu_load_info_t load = (host_cpu_load_info_t)host_info_out;
+	load->cpu_ticks[CPU_STATE_USER] = (natural_t)user;
+	load->cpu_ticks[CPU_STATE_NICE] = (natural_t)nice;
+	load->cpu_ticks[CPU_STATE_SYSTEM] = (natural_t)system;
+	load->cpu_ticks[CPU_STATE_IDLE] = (natural_t)idle;
+	*host_info_outCnt = HOST_CPU_LOAD_INFO_COUNT;
+	return KERN_SUCCESS;
+}
+
 kern_return_t
 host_statistics(host_t host_priv, host_flavor_t flavor,
 		host_info_t host_info_out,
@@ -250,6 +338,9 @@ host_statistics(host_t host_priv, host_flavor_t flavor,
 			(void *)flavor, (void *)host_info_out,
 			(void *)host_info_outCnt);
 #endif
+	if (flavor == HOST_CPU_LOAD_INFO) {
+		return host_cpu_load(host_info_out, host_info_outCnt);
+	}
 	if (flavor != HOST_VM_INFO) {
 		unimplemented();
 	}
@@ -301,7 +392,24 @@ host_statistics64(host_t host_priv, host_flavor_t flavor,
 			(void *)host_priv, (void *)flavor,
 			(void *)host_info64_out, (void *)host_info64_outCnt);
 #endif
-	unimplemented();
+	if (flavor != HOST_VM_INFO64
+			|| *host_info64_outCnt < HOST_VM_INFO64_COUNT) {
+		return KERN_INVALID_ARGUMENT;
+	}
+
+	struct sysinfo info;
+	sysinfo(&info);
+	natural_t page_size = getpagesize();
+	natural_t total = (uint64_t)info.totalram * info.mem_unit / page_size;
+	natural_t free = (uint64_t)info.freeram * info.mem_unit / page_size;
+
+	vm_statistics64_t statistics = (vm_statistics64_t)host_info64_out;
+	memset(statistics, 0, sizeof(*statistics));
+	statistics->free_count = free;
+	statistics->active_count = (total - free) / 2;
+	statistics->inactive_count = (total - free) - statistics->active_count;
+	*host_info64_outCnt = HOST_VM_INFO64_COUNT;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
