@@ -158,6 +158,8 @@ static struct {
 	struct workq_kqueue_request **kqueue_requests_tail;
 	uint32_t idle;
 	uint32_t constrained;
+
+	long cpus;
 } workq = {
 		.lock = PTHREAD_MUTEX_INITIALIZER,
 		.wakeup = PTHREAD_COND_INITIALIZER,
@@ -325,8 +327,10 @@ static void
 workq_schedule(void)
 {
 	uint32_t pending = workq_pending();
-	if (workq.idle > 0) {
-		pthread_cond_broadcast(&workq.wakeup);
+
+	uint32_t wake = pending < workq.idle ? pending : workq.idle;
+	for (uint32_t i = 0; i < wake; i++) {
+		pthread_cond_signal(&workq.wakeup);
 	}
 
 	struct workq_request request;
@@ -366,8 +370,10 @@ workq_claim(struct workq_request *request)
 		return true;
 	}
 
-	bool constrained_allowed
-			= workq.constrained < sysconf(_SC_NPROCESSORS_ONLN);
+	if (workq.cpus == 0) {
+		workq.cpus = sysconf(_SC_NPROCESSORS_ONLN);
+	}
+	bool constrained_allowed = workq.constrained < workq.cpus;
 	for (int32_t qos = WORKQ_QOS_COUNT - 1; qos >= 0; qos--) {
 		if (workq.requests[qos][WORKQ_OVERCOMMIT] > 0) {
 			workq.requests[qos][WORKQ_OVERCOMMIT]--;
