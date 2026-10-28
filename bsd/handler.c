@@ -3182,7 +3182,14 @@ sys___pthread_canceled(int action)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "__pthread_canceled(%p)\n", (void *)action);
 #endif
-	unimplemented();
+
+	switch (action) {
+	case 1:
+	case 2:
+		return 0;
+	default:
+		return _EINVAL;
+	}
 }
 
 int
