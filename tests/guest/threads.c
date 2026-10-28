@@ -31,6 +31,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 #include "check.h"
 
@@ -90,6 +91,13 @@ main(void)
 	}
 	CHECK(written == THREADS / 2 * ITERATIONS / 10);
 
+	uint64_t start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
+	CHECK(start != 0);
+	volatile uint64_t sum = 0;
+	for (int i = 0; i != 10000000; i++) {
+		sum += i;
+	}
+	CHECK(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) > start);
 	CHECK(qos_class_main() != QOS_CLASS_UNSPECIFIED);
 
 	char name[32];
