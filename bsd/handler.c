@@ -3465,6 +3465,10 @@ sys_audit(void *record, int length)
 	unimplemented();
 }
 
+#define A_OLDGETCOND 20
+#define A_GETCOND    37
+#define AUC_NOAUDIT  2
+
 int
 sys_auditon(int cmd, void *data, int length)
 {
@@ -3472,6 +3476,21 @@ sys_auditon(int cmd, void *data, int length)
 	fprintf(stderr, "auditon(%p, %p, %p)\n", (void *)cmd, (void *)data,
 			(void *)length);
 #endif
+	/* No audit daemon runs, so nothing is audited */
+	switch (cmd) {
+	case A_GETCOND:
+		if (length != (int)sizeof(int32_t)) {
+			return _EINVAL;
+		}
+		*(int32_t *)data = AUC_NOAUDIT;
+		return 0;
+	case A_OLDGETCOND:
+		if (length != (int)sizeof(int64_t)) {
+			return _EINVAL;
+		}
+		*(int64_t *)data = AUC_NOAUDIT;
+		return 0;
+	}
 	unimplemented();
 }
 
