@@ -49,6 +49,7 @@
 #define LIMBO_CPU_TYPE CPU_TYPE_ARM64
 #endif
 
+static size_t image_span(const struct mach_header_64 *header);
 static struct mach_header_64 *header_compatible(struct fat_header *fat);
 static void zero_bss(struct segment_command_64 *cmd, uintptr_t base_address);
 
@@ -83,6 +84,7 @@ linker_link(const char *path, const char **dylinker_path, uintptr_t *entry)
 	}
 
 	uint32_t offset = (uint32_t)((char *)header - (char *)fat);
+	size_t span = image_span(header);
 
 	uintptr_t base_address = 0;
 #ifdef NDEBUG
@@ -109,18 +111,17 @@ linker_link(const char *path, const char **dylinker_path, uintptr_t *entry)
 		for (uintptr_t candidate = 0x10000000;
 				candidate < 0x80000000;
 				candidate += 0x1000000) {
-			void *landing = mmap((void *)candidate, 0x1000000,
-					PROT_READ,
+			void *landing = mmap((void *)candidate, span, PROT_READ,
 					MAP_PRIVATE | MAP_ANON
 							| MAP_FIXED_NOREPLACE,
 					-1, 0);
 			if (landing == (void *)candidate) {
-				munmap(landing, 0x1000000);
+				munmap(landing, span);
 				base_address = candidate;
 				break;
 			}
 			if (landing != MAP_FAILED) {
-				munmap(landing, 0x1000000);
+				munmap(landing, span);
 			}
 		}
 		if (base_address == 0) {
@@ -151,6 +152,10 @@ linker_link(const char *path, const char **dylinker_path, uintptr_t *entry)
 
 			/* HACK: Do not map __PAGEZERO */
 			if (cmd->vmsize == 0x100000000) {
+				break;
+			}
+
+			if (cmd->vmsize == 0) {
 				break;
 			}
 
@@ -283,6 +288,34 @@ zero_bss(struct segment_command_64 *cmd, uintptr_t base_address)
 					sects[j].size);
 		}
 	}
+}
+
+static size_t
+image_span(const struct mach_header_64 *header)
+{
+	uint64_t low = UINT64_MAX;
+	uint64_t high = 0;
+	const struct load_command *command
+			= (const struct load_command *)(header + 1);
+	for (uint32_t i = 0; i < header->ncmds; i++) {
+		if (command->cmd == LC_SEGMENT_64) {
+			const struct segment_command_64 *cmd
+					= (const struct segment_command_64 *)command;
+
+			if (cmd->vmsize != 0x100000000 && cmd->vmsize != 0) {
+				if (cmd->vmaddr < low) {
+					low = cmd->vmaddr;
+				}
+				if (cmd->vmaddr + cmd->vmsize > high) {
+					high = cmd->vmaddr + cmd->vmsize;
+				}
+			}
+		}
+		command = (const struct load_command *)((const char *)command
+				+ command->cmdsize);
+	}
+	size_t span = (high > low) ? high - low : 0x1000000;
+	return span < 0x1000000 ? 0x1000000 : span;
 }
 
 /*
