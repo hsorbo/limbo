@@ -2492,9 +2492,9 @@ int
 sys_shm_unlink(const char *name)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "shm_unlink(%p)\n", (void *)name);
+	fprintf(stderr, "shm_unlink(\"%s\")\n", name);
 #endif
-	unimplemented();
+	return errno_map(shm_unlink(name));
 }
 
 #define SEMAPHORE_MAX 1024
