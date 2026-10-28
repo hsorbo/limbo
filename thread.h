@@ -60,6 +60,7 @@ typedef bool (*thread_continuation_t)(
 
 struct thread {
 	mach_port_name_t port;
+	pid_t tid;
 	thread_continuation_t continuation;
 	void *context;
 	struct thread_state state;

@@ -53,6 +53,7 @@
 #include <unistd.h>
 
 #include "bsd/handler.h"
+#include "bsd/signals.h"
 #include "bsd/xnu-errno.h"
 #include "mdep/handler.h"
 #include "osfmk/handler.h"
@@ -94,6 +95,14 @@ static pthread_once_t signal_stack_once = PTHREAD_ONCE_INIT;
 static __thread uint64_t guest_thread_pointer;
 static __thread bool x1_pending;
 static __thread uint64_t x1_value;
+
+static __thread ucontext_t *trap_context;
+static __thread bool context_kept;
+
+static uintptr_t limbo_text_start, limbo_text_end;
+static uintptr_t vdso_start, vdso_end;
+static void find_limbo_text(void);
+static bool in_limbo(uint64_t pc);
 #endif
 
 #ifndef __x86_64__
@@ -137,11 +146,26 @@ syscall_handler_install(void)
 		perror("sigaction");
 		return 1;
 	}
+	find_limbo_text();
+	signals_init();
 #endif
 	return 0;
 }
 
 #ifndef __x86_64__
+
+__attribute__((always_inline)) static inline uint64_t
+enter_limbo(void)
+{
+	uint64_t entry_pointer, stack_pointer;
+	asm volatile("mrs %0, tpidr_el0" : "=r"(entry_pointer));
+	asm volatile("mov %0, sp" : "=r"(stack_pointer));
+	const struct signal_stack *stack = (const void *)(stack_pointer
+			& ~(SIGNAL_STACK_SIZE - 1));
+	asm volatile("msr tpidr_el0, %0" ::"r"(stack->thread_pointer));
+	return entry_pointer;
+}
+
 __attribute__((no_stack_protector)) static void
 emulate_system_register(int sig, siginfo_t *info, void *ucontext)
 {
@@ -155,7 +179,68 @@ emulate_system_register(int sig, siginfo_t *info, void *ucontext)
 		mc->pc += 4;
 		return;
 	}
-	abort();
+	syscall_signal_handler(sig, info, ucontext);
+}
+
+__attribute__((no_stack_protector)) void
+syscall_signal_handler(int sig, siginfo_t *info, void *ucontext)
+{
+	ucontext_t *uc = ucontext;
+	stack_t ss;
+	register uint64_t x0 asm("x0") = 0;
+	register uint64_t x1 asm("x1") = (uint64_t)&ss;
+	register uint64_t x8 asm("x8") = 132;
+	asm volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x8) : "memory");
+	if (x0 != 0 || !(ss.ss_flags & SS_ONSTACK)) {
+		signals_handle(sig, info, uc, SIGNAL_ON_LIMBO_THREAD);
+		return;
+	}
+
+	uint64_t entry_pointer = enter_limbo();
+	signals_handle(sig, info, uc,
+			in_limbo(uc->uc_mcontext.pc) ? SIGNAL_IN_LIMBO
+						     : SIGNAL_IN_GUEST);
+	asm volatile("msr tpidr_el0, %0" ::"r"(entry_pointer));
+}
+
+static void
+find_limbo_text(void)
+{
+	Elf64_Phdr *phdrs = (Elf64_Phdr *)getauxval(AT_PHDR);
+	unsigned long e_phnum = getauxval(AT_PHNUM);
+	limbo_text_start = UINTPTR_MAX;
+	for (unsigned long i = 0; i < e_phnum; i++) {
+		if (phdrs[i].p_type == PT_LOAD && (phdrs[i].p_flags & PF_X)) {
+			uintptr_t end = phdrs[i].p_vaddr + phdrs[i].p_memsz;
+			if (phdrs[i].p_vaddr < limbo_text_start) {
+				limbo_text_start = phdrs[i].p_vaddr;
+			}
+			if (end > limbo_text_end) {
+				limbo_text_end = end;
+			}
+		}
+	}
+
+	const Elf64_Ehdr *vdso = (const void *)getauxval(AT_SYSINFO_EHDR);
+	if (vdso == NULL) {
+		return;
+	}
+	const Elf64_Phdr *vphdrs
+			= (const void *)((const uint8_t *)vdso + vdso->e_phoff);
+	for (int i = 0; i < vdso->e_phnum; i++) {
+		if (vphdrs[i].p_type == PT_LOAD) {
+			vdso_start = (uintptr_t)vdso;
+			vdso_end = (uintptr_t)vdso + vphdrs[i].p_offset
+					+ vphdrs[i].p_memsz;
+		}
+	}
+}
+
+static bool
+in_limbo(uint64_t pc)
+{
+	return (pc >= limbo_text_start && pc < limbo_text_end)
+			|| (pc >= vdso_start && pc < vdso_end);
 }
 #endif
 
@@ -256,9 +341,13 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 	asm volatile("msr tpidr_el0, %0" ::"r"(stack->thread_pointer));
 	uint64_t outer_pointer = guest_thread_pointer;
 	guest_thread_pointer = entry_pointer;
+	ucontext_t *outer_context = trap_context;
+	trap_context = ucontext;
 
 	dispatch_syscall(mc);
+	signals_trap_exit(ucontext);
 
+	trap_context = outer_context;
 	uint64_t resume_pointer = guest_thread_pointer;
 	guest_thread_pointer = outer_pointer;
 	asm volatile("msr tpidr_el0, %0" ::"r"(resume_pointer));
@@ -268,6 +357,24 @@ void
 syscall_set_guest_thread_pointer(uint64_t pointer)
 {
 	guest_thread_pointer = pointer;
+}
+
+ucontext_t *
+syscall_trap_context(void)
+{
+	return trap_context;
+}
+
+void
+syscall_trap_reset(void)
+{
+	trap_context = NULL;
+}
+
+void
+syscall_keep_context(void)
+{
+	context_kept = true;
 }
 
 static void
@@ -300,7 +407,10 @@ dispatch_syscall(mcontext_t *mc)
 	} else {
 		int64_t result = sys_bsd((unsigned long)number, arg1, arg2,
 				arg3, arg4, arg5, arg6, sp);
-		if (returns_raw_result((unsigned long)number, arg1)) {
+		if (context_kept) {
+			context_kept = false;
+			x1_pending = false;
+		} else if (returns_raw_result((unsigned long)number, arg1)) {
 			mc->pstate &= ~PSTATE_C;
 			regs[0] = result;
 		} else {

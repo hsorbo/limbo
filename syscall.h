@@ -34,5 +34,13 @@ int syscall_handler_install(void);
 int syscall_dispatch_enable(void);
 void syscall_set_rdx(uint64_t value);
 #ifndef __x86_64__
+#include <signal.h>
+#include <ucontext.h>
+
 void syscall_set_guest_thread_pointer(uint64_t pointer);
+void syscall_signal_handler(int sig, siginfo_t *info, void *ucontext);
+void limbo_rt_sigreturn(void);
+ucontext_t *syscall_trap_context(void);
+void syscall_trap_reset(void);
+void syscall_keep_context(void);
 #endif
