@@ -38,6 +38,7 @@
 #include <sys/personality.h>
 #include <sys/prctl.h>
 #include <sys/random.h>
+#include <sys/resource.h>
 #include <ucontext.h>
 #include <unistd.h>
 
@@ -55,6 +56,7 @@ static int run(int argc, char *argv[], char *envp[]);
 static uintptr_t build_stack(uint8_t *exe_base, const char *path, int argc,
 		char *argv[], char *envp[]);
 static int restart_without_aslr(char *argv[], char *envp[]);
+static void raise_file_limit(void);
 
 int
 main(int argc, char *argv[], char *envp[])
@@ -63,11 +65,24 @@ main(int argc, char *argv[], char *envp[])
 		return restart_without_aslr(argv, envp);
 	}
 
+	raise_file_limit();
+
 	if (syscall_dispatch_enable()) {
 		return 1;
 	}
 
 	return run(argc, argv, envp);
+}
+
+static void
+raise_file_limit(void)
+{
+	struct rlimit limit;
+	if (getrlimit(RLIMIT_NOFILE, &limit) == 0
+			&& limit.rlim_cur < limit.rlim_max) {
+		limit.rlim_cur = limit.rlim_max;
+		setrlimit(RLIMIT_NOFILE, &limit);
+	}
 }
 
 static int
