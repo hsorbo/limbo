@@ -49,30 +49,29 @@ enum csr_syscalls {
 	CSR_SYSCALL_GET_ACTIVE_CONFIG,
 };
 
+static const uint32_t active_config = CSR_ALLOW_TASK_FOR_PID;
+
 static int
 csr_check(void *useraddr, void *usersize)
 {
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "csr_check(%p, %p)\n", useraddr, usersize);
 #endif
-	uint32_t mask = 0;
 	if ((uint64_t)usersize != 4) {
-		return err_map(EFAULT);
+		return err_map(EINVAL);
 	}
+	uint32_t mask = *(uint32_t *)useraddr;
+	return (mask & ~active_config) != 0 ? 1 : 0;
+}
 
-	mask = *(uint32_t *)useraddr;
-
-	switch (mask) {
-	case CSR_ALLOW_TASK_FOR_PID:
-		return 0;
-	/* As far as I can tell, if this is TRUE then it indicates SIP */
-	case CSR_ALLOW_APPLE_INTERNAL:
-		return 1;
-	case CSR_ALLOW_UNRESTRICTED_FS:
-		return 1;
-	default:
-		unimplemented();
+static int
+csr_get_active_config(void *useraddr, void *usersize)
+{
+	if ((uint64_t)usersize != 4) {
+		return err_map(EINVAL);
 	}
+	*(uint32_t *)useraddr = active_config;
+	return 0;
 }
 
 int
@@ -85,6 +84,8 @@ sys_csrctl(uint32_t op, user_addr_t useraddr, user_addr_t usersize)
 	switch (op) {
 	case CSR_SYSCALL_CHECK:
 		return csr_check(useraddr, usersize);
+	case CSR_SYSCALL_GET_ACTIVE_CONFIG:
+		return csr_get_active_config(useraddr, usersize);
 	default:
 		unimplemented();
 	}
