@@ -284,6 +284,8 @@ in_limbo(uint64_t pc)
 #define SYSCALL_CLASS_MDEP_ARM64 0x80000000
 #define SVC_LINUX 0xd4000001
 
+#define BSD_SYS___pthread_kill 328
+#define BSD_SYS_abort_with_payload 521
 #define BSD_SYS_ulock_wait  515
 #define BSD_SYS_ulock_wake  516
 #define BSD_SYS_ulock_wait2 544
@@ -381,6 +383,26 @@ syscall_set_guest_thread_pointer(uint64_t pointer)
 	guest_thread_pointer = pointer;
 }
 
+/*
+ * The guest's return addresses, from its frame pointers, for a guest that
+ * aborts. The addresses carry no pointer authentication codes, so that
+ * doc/arm64-native/slide.c can name them
+ */
+void
+syscall_print_guest_chain(const mcontext_t *mc)
+{
+	fprintf(stderr, "  guest chain: %llx %llx", mc->pc & 0x7fffffffffULL,
+			mc->regs[30] & 0x7fffffffffULL);
+	const uint64_t *frame = (const uint64_t *)mc->regs[29];
+	for (int i = 0; i < 64 && frame != NULL && ((uintptr_t)frame & 7) == 0;
+			i++) {
+		fprintf(stderr, " %llx",
+				(unsigned long long)(frame[1] & 0x7fffffffffULL));
+		frame = (const uint64_t *)frame[0];
+	}
+	fprintf(stderr, "\n");
+}
+
 ucontext_t *
 syscall_trap_context(void)
 {
@@ -427,6 +449,11 @@ dispatch_syscall(mcontext_t *mc)
 		regs[0] = sys_mdep((unsigned long)number, arg1, arg2, arg3,
 				arg4, arg5, arg6, sp);
 	} else {
+		/* SIGABRT, which Darwin numbers as Linux does */
+		if ((number == BSD_SYS___pthread_kill && arg2 == SIGABRT)
+				|| number == BSD_SYS_abort_with_payload) {
+			syscall_print_guest_chain(mc);
+		}
 		int64_t result = sys_bsd((unsigned long)number, arg1, arg2,
 				arg3, arg4, arg5, arg6, sp);
 		if (context_kept) {
