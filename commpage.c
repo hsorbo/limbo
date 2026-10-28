@@ -28,6 +28,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/auxv.h>
 #include <sys/mman.h>
 #include <time.h>
 #ifdef __x86_64__
@@ -56,6 +57,8 @@ commpage_mmap(void)
 	*(uint8_t *)_COMM_PAGE_ACTIVE_CPUS = 12;
 	*(uint8_t *)_COMM_PAGE_LOGICAL_CPUS = 24;
 	*(uint8_t *)_COMM_PAGE_PHYSICAL_CPUS = 12;
+
+	*(uint8_t *)_COMM_PAGE_KERNEL_PAGE_SHIFT = 12;
 	*(uint8_t *)_COMM_PAGE_USER_PAGE_SHIFT_64 = 12;
 	*(uint64_t *)_COMM_PAGE_MEMORY_SIZE = 17179869184;
 	init_nanotime();
@@ -146,6 +149,16 @@ static const uint8_t commpage_snapshot[] = {
 #define COMM_PAGE_APPROX_TIME_SUPPORTED 0xc8
 #define COMM_PAGE_NEWTIMEOFDAY_TICK    0x120
 #define COMM_PAGE_APRR_SUPPORT         0x10c
+#define COMM_PAGE_CPU_CAPABILITIES64   0x10
+#define COMM_PAGE_CPU_CAPABILITIES     0x20
+
+#define CAPABILITY_AMX_VERSION 0x78000000ULL
+
+#define CAPABILITY_SME  (1ULL << 60)
+#define CAPABILITY_SME2 (1ULL << 61)
+#ifndef HWCAP2_SME
+#define HWCAP2_SME (1UL << 23)
+#endif
 
 static const uintptr_t _COMM_PAGE_RO_ADDRESS = 0xfffff4000ULL;
 static const uint8_t host_cpu_count = 14;
@@ -179,6 +192,16 @@ commpage_mmap(void)
 	commpage[COMM_PAGE_APPROX_TIME_SUPPORTED] = 0;
 
 	commpage[COMM_PAGE_APRR_SUPPORT] = 0;
+
+	uint64_t *capabilities64
+			= (uint64_t *)(commpage + COMM_PAGE_CPU_CAPABILITIES64);
+	uint32_t *capabilities
+			= (uint32_t *)(commpage + COMM_PAGE_CPU_CAPABILITIES);
+	if (!(getauxval(AT_HWCAP2) & HWCAP2_SME)) {
+		*capabilities64 &= ~(CAPABILITY_SME | CAPABILITY_SME2);
+	}
+	*capabilities64 &= ~CAPABILITY_AMX_VERSION;
+	*capabilities &= ~(uint32_t)CAPABILITY_AMX_VERSION;
 	*(uint64_t *)(commpage + COMM_PAGE_NEWTIMEOFDAY_TICK) = 0;
 	struct timespec now;
 	clock_gettime(CLOCK_REALTIME, &now);
