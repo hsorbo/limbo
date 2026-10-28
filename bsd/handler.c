@@ -460,6 +460,87 @@ sys_ptrace(int req, uint64_t pid, void *addr, int data)
 	unimplemented();
 }
 
+struct xnu_msghdr {
+	void *msg_name;
+	uint32_t msg_namelen;
+	struct iovec *msg_iov;
+	int32_t msg_iovlen;
+	void *msg_control;
+	uint32_t msg_controllen;
+	int32_t msg_flags;
+};
+
+struct xnu_cmsghdr {
+	uint32_t cmsg_len;
+	int32_t cmsg_level;
+	int32_t cmsg_type;
+};
+
+#define xnu_CMSG_ALIGN(n) (((n) + 3) & ~(size_t)3)
+#define xnu_SOL_SOCKET 0xffff
+#define xnu_SCM_RIGHTS 1
+#define xnu_MSG_TRUNC 0x10
+#define xnu_MSG_CTRUNC 0x20
+
+static size_t
+control_to_host(const struct xnu_msghdr *guest, void *host, size_t size)
+{
+	size_t used = 0;
+	const uint8_t *position = guest->msg_control;
+	const uint8_t *end = position + guest->msg_controllen;
+	while (position + sizeof(struct xnu_cmsghdr) <= end) {
+		const struct xnu_cmsghdr *cmsg = (const void *)position;
+		if (cmsg->cmsg_len < sizeof(*cmsg)
+				|| position + cmsg->cmsg_len > end) {
+			break;
+		}
+		size_t length = cmsg->cmsg_len - sizeof(*cmsg);
+		if (cmsg->cmsg_level == xnu_SOL_SOCKET
+				&& cmsg->cmsg_type == xnu_SCM_RIGHTS
+				&& used + CMSG_SPACE(length) <= size) {
+			struct cmsghdr *out = (void *)((uint8_t *)host + used);
+			out->cmsg_len = CMSG_LEN(length);
+			out->cmsg_level = SOL_SOCKET;
+			out->cmsg_type = SCM_RIGHTS;
+			memcpy(CMSG_DATA(out), cmsg + 1, length);
+			used += CMSG_SPACE(length);
+		}
+		position += xnu_CMSG_ALIGN(cmsg->cmsg_len);
+	}
+	return used;
+}
+
+static uint32_t
+control_to_guest(struct msghdr *host, struct xnu_msghdr *guest)
+{
+	uint32_t used = 0;
+	for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(host); cmsg != NULL;
+			cmsg = CMSG_NXTHDR(host, cmsg)) {
+		if (cmsg->cmsg_level != SOL_SOCKET
+				|| cmsg->cmsg_type != SCM_RIGHTS) {
+			continue;
+		}
+		size_t length = cmsg->cmsg_len - CMSG_LEN(0);
+		size_t space = xnu_CMSG_ALIGN(sizeof(struct xnu_cmsghdr) + length);
+		if (used + space > guest->msg_controllen) {
+
+			for (size_t i = 0; i != length / sizeof(int); i++) {
+				close(((int *)CMSG_DATA(cmsg))[i]);
+			}
+			guest->msg_flags |= xnu_MSG_CTRUNC;
+			continue;
+		}
+		struct xnu_cmsghdr *out = (void *)((uint8_t *)guest->msg_control
+				+ used);
+		out->cmsg_len = sizeof(*out) + length;
+		out->cmsg_level = xnu_SOL_SOCKET;
+		out->cmsg_type = xnu_SCM_RIGHTS;
+		memcpy(out + 1, CMSG_DATA(cmsg), length);
+		used += space;
+	}
+	return used;
+}
+
 int
 sys_recvmsg(int s, void *msg, int flags)
 {
@@ -467,7 +548,43 @@ sys_recvmsg(int s, void *msg, int flags)
 	fprintf(stderr, "recvmsg(%p, %p, %p)\n", (void *)s, (void *)msg,
 			(void *)flags);
 #endif
-	unimplemented();
+	struct xnu_msghdr *guest = msg;
+	struct sockaddr_storage address;
+	uint8_t control[CMSG_SPACE(253 * sizeof(int))]
+			__attribute__((aligned(8)));
+	struct msghdr host = {
+		.msg_name = guest->msg_name != NULL ? &address : NULL,
+		.msg_namelen = guest->msg_name != NULL ? sizeof(address) : 0,
+		.msg_iov = guest->msg_iov,
+		.msg_iovlen = guest->msg_iovlen,
+		.msg_control = guest->msg_control != NULL ? control : NULL,
+		.msg_controllen = guest->msg_control != NULL ? sizeof(control)
+				: 0,
+	};
+	ssize_t received = recvmsg(s, &host,
+			translate_msg_flags(flags) | MSG_CMSG_CLOEXEC);
+	if (received < 0) {
+		return err_map(errno);
+	}
+	if (guest->msg_name != NULL) {
+		translate_to_guest_sockaddr(&address, host.msg_namelen);
+		uint32_t length = host.msg_namelen < guest->msg_namelen
+				? host.msg_namelen
+				: guest->msg_namelen;
+		memcpy(guest->msg_name, &address, length);
+		guest->msg_namelen = host.msg_namelen;
+	}
+	guest->msg_flags = 0;
+	if (host.msg_flags & MSG_TRUNC) {
+		guest->msg_flags |= xnu_MSG_TRUNC;
+	}
+	if (host.msg_flags & MSG_CTRUNC) {
+		guest->msg_flags |= xnu_MSG_CTRUNC;
+	}
+	if (guest->msg_control != NULL) {
+		guest->msg_controllen = control_to_guest(&host, guest);
+	}
+	return (int)received;
 }
 
 int
@@ -477,7 +594,26 @@ sys_sendmsg(int s, void *msg, int flags)
 	fprintf(stderr, "sendmsg(%p, %p, %p)\n", (void *)s, (void *)msg,
 			(void *)flags);
 #endif
-	unimplemented();
+	const struct xnu_msghdr *guest = msg;
+	struct sockaddr_storage address;
+	uint8_t control[CMSG_SPACE(253 * sizeof(int))]
+			__attribute__((aligned(8)));
+	struct msghdr host = {
+		.msg_iov = guest->msg_iov,
+		.msg_iovlen = guest->msg_iovlen,
+	};
+	if (guest->msg_name != NULL) {
+		host.msg_name = &address;
+		host.msg_namelen = translate_to_host_sockaddr(guest->msg_name,
+				guest->msg_namelen, &address);
+	}
+	if (guest->msg_control != NULL) {
+		host.msg_controllen = control_to_host(guest, control,
+				sizeof(control));
+		host.msg_control = host.msg_controllen != 0 ? control : NULL;
+	}
+	return errno_map(sendmsg(s, &host,
+			translate_msg_flags(flags) | MSG_NOSIGNAL));
 }
 
 int
@@ -513,7 +649,20 @@ sys_accept(int s, void *name, void *anamelen)
 	fprintf(stderr, "accept(%p, %p, %p)\n", (void *)s, (void *)name,
 			(void *)anamelen);
 #endif
-	unimplemented();
+	struct sockaddr_storage host;
+	socklen_t host_len = sizeof(host);
+	int result = accept4(s, name != NULL ? (struct sockaddr *)&host : NULL,
+			name != NULL ? &host_len : NULL, 0);
+	if (result >= 0 && name != NULL && anamelen != NULL) {
+		translate_to_guest_sockaddr(&host, host_len);
+		uint32_t guest_len = *(uint32_t *)anamelen;
+		if (host_len < guest_len) {
+			guest_len = host_len;
+		}
+		memcpy(name, &host, guest_len);
+		*(uint32_t *)anamelen = host_len;
+	}
+	return errno_map(result);
 }
 
 int
@@ -1219,7 +1368,6 @@ sys_setpriority(int which, void *who, int prio)
 #define xnu_AF_INET6   30
 #define xnu_SOCK_STREAM 1
 #define xnu_SOCK_DGRAM 2
-#define xnu_SOL_SOCKET 0xffff
 #define xnu_SO_REUSEADDR 0x0004
 #define xnu_SO_KEEPALIVE 0x0008
 #define xnu_SO_DONTROUTE 0x0010
