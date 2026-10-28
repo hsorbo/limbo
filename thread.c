@@ -59,6 +59,7 @@ thread_current(void)
 {
 	if (current == NULL) {
 		current = thread_new(NULL, NULL);
+		current->tid = gettid();
 	}
 	return current;
 }
@@ -109,12 +110,26 @@ thread_main(void *arg)
 	sigaddset(&needed, SIGBUS);
 	pthread_sigmask(SIG_UNBLOCK, &needed, NULL);
 
+	if (thread->continuation != NULL) {
+		sigset_t others;
+		sigfillset(&others);
+		sigdelset(&others, SIGSYS);
+		sigdelset(&others, SIGILL);
+		sigdelset(&others, SIGSEGV);
+		sigdelset(&others, SIGBUS);
+		pthread_sigmask(SIG_BLOCK, &others, NULL);
+	}
+	thread->tid = gettid();
+
 	if (syscall_dispatch_enable()) {
 		abort();
 	}
 
 	if (sigsetjmp(thread->kernel, 1) != 0) {
 		thread->continuation_pending = true;
+#ifndef __x86_64__
+		syscall_trap_reset();
+#endif
 	}
 
 	if (thread->continuation_pending) {

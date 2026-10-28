@@ -77,6 +77,7 @@
 #include <unistd.h>
 
 #include "commpage.h"
+#include "signals.h"
 #include "fs/at.h"
 #include "fs/bsd_flags.h"
 #include "codesign.h"
@@ -147,6 +148,7 @@ sys_fork(void)
 	if (pid == 0) {
 		syscall_dispatch_enable();
 		broker_client_reset();
+		signals_fork_child();
 	}
 	syscall_set_rdx(pid == 0);
 	return (pid == 0) ? parent : pid;
@@ -204,7 +206,6 @@ static int clone_file(int src_fd, int dst_dirfd, const char *dst_host,
 
 #define _CLONE_NOFOLLOW     0x0001
 #define _CLONE_NOOWNERCOPY  0x0002
-static int signal_mask(int how, const uint32_t *set, uint32_t *oset);
 static int rlimit_resource(uint32_t which);
 static uint64_t rlimit_to_darwin(rlim_t value);
 static rlim_t rlimit_from_darwin(uint64_t value);
@@ -871,17 +872,6 @@ sys_getegid(void)
 }
 
 int
-sys_sigaction(int signum, void *nsa, void *osa)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "sigaction(%p, %p, %p)\n", (void *)signum, (void *)nsa,
-			(void *)osa);
-#endif
-	/* TODO: Handle */
-	return 0;
-}
-
-int
 sys_getgid(void)
 {
 #ifdef ENABLE_STRACE
@@ -897,36 +887,7 @@ sys_sigprocmask(int how, user_addr_t mask, user_addr_t omask)
 	fprintf(stderr, "sigprocmask(%p, %p, %p)\n", (void *)how, (void *)mask,
 			(void *)omask);
 #endif
-	return signal_mask(how, mask, omask);
-}
-
-#define _SIG_BLOCK   1
-#define _SIG_SETMASK 3
-
-static int
-signal_mask(int how, const uint32_t *set, uint32_t *oset)
-{
-	sigset_t linux_set, old;
-	sigset_t *new_set = NULL;
-	if (set != NULL) {
-		if (how < _SIG_BLOCK || how > _SIG_SETMASK) {
-			return _EINVAL;
-		}
-		sigset_to_linux(*set, &linux_set);
-		sigdelset(&linux_set, SIGSYS);
-		sigdelset(&linux_set, SIGILL);
-		new_set = &linux_set;
-	}
-
-	int error = pthread_sigmask(
-			how - _SIG_BLOCK + SIG_BLOCK, new_set, &old);
-	if (error != 0) {
-		return err_map(error);
-	}
-	if (oset != NULL) {
-		*oset = sigset_from_linux(&old);
-	}
-	return 0;
+	return signals_mask(how, mask, omask);
 }
 
 int
@@ -968,25 +929,6 @@ sys_acct(char *path)
 	fprintf(stderr, "acct(%p)\n", (void *)path);
 #endif
 	return errno_map(acct(path));
-}
-
-int
-sys_sigpending(void *osv)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "sigpending(%p)\n", (void *)osv);
-#endif
-	unimplemented();
-}
-
-int
-sys_sigaltstack(void *nss, void *oss)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "sigaltstack(%p, %p)\n", (void *)nss, (void *)oss);
-#endif
-	/* TODO: Handle */
-	return 0;
 }
 
 int
@@ -2191,17 +2133,6 @@ sys_seteuid(void *euid)
 }
 
 int
-sys_sigreturn(void *uctx, int infostyle, user_addr_t token)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "sigreturn(%p, %p, %p)\n", (void *)uctx,
-			(void *)infostyle, (void *)token);
-#endif
-	/* TODO: Handle */
-	return 0;
-}
-
-int
 sys_thread_selfcounts(int type, user_addr_t buf, user_size_t nbytes)
 {
 #ifdef ENABLE_STRACE
@@ -3335,10 +3266,18 @@ sys___pthread_kill(int thread_port, int sig)
 	fprintf(stderr, "__pthread_kill(%p, %p)\n", (void *)thread_port,
 			(void *)sig);
 #endif
-	if ((mach_port_name_t)thread_port != thread_current()->port) {
-		unimplemented();
+	struct thread *thread
+			= ((mach_port_name_t)thread_port == thread_current()->port)
+			? thread_current()
+			: ipc_kobject_lookup(thread_port, IPC_KOBJECT_THREAD);
+	if (thread == NULL || thread->tid == 0) {
+		return _ESRCH;
 	}
-	return errno_map(tgkill(getpid(), gettid(), signo_to_linux(sig)));
+	int linux_sig = signo_to_linux(sig);
+	if (sig != 0 && linux_sig == 0) {
+		return _EINVAL;
+	}
+	return errno_map(tgkill(getpid(), thread->tid, linux_sig));
 }
 
 int
@@ -3348,7 +3287,7 @@ sys___pthread_sigmask(int how, user_addr_t set, user_addr_t oset)
 	fprintf(stderr, "__pthread_sigmask(%p, %p, %p)\n", (void *)how,
 			(void *)set, (void *)oset);
 #endif
-	return signal_mask(how, set, oset);
+	return signals_mask(how, set, oset);
 }
 
 int
