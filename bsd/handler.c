@@ -1065,8 +1065,12 @@ sys_execve(char *fname, char **argp, char **envp)
 			(void *)envp);
 #endif
 	char buffer[PATH_MAX];
-	return errno_map(execve(
-			sysroot_host_path(fname, 0, buffer), argp, envp));
+	char **script_argv;
+	const char *host = exec_path(fname, argp, buffer, &script_argv);
+	int result = errno_map(execve(host,
+			(script_argv != NULL) ? script_argv : argp, envp));
+	free(script_argv);
+	return result;
 }
 
 int

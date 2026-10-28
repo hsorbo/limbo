@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "handler.h"
 #include "signo.h"
@@ -139,11 +140,81 @@ sys_posix_spawn(void *pid, const char *path, void *adesc, char **argv,
 			&actions);
 
 	char buffer[PATH_MAX];
-	int result = posix_spawn(pid, sysroot_host_path(path, 0, buffer),
-			&actions, &attr, argv, envp);
+	char **script_argv;
+	const char *host = exec_path(path, argv, buffer, &script_argv);
+	int result = posix_spawn(pid, host, &actions, &attr,
+			(script_argv != NULL) ? script_argv : argv, envp);
+	free(script_argv);
 	posix_spawn_file_actions_destroy(&actions);
 	posix_spawnattr_destroy(&attr);
 	return (result == 0) ? 0 : err_map(result);
+}
+
+#define IMG_SHSIZE 512
+
+const char *
+exec_path(const char *path, char **argv, char *buffer, char ***script_argv)
+{
+	*script_argv = NULL;
+	const char *host = sysroot_host_path(path, 0, buffer);
+	int fd = open(host, O_RDONLY | O_CLOEXEC);
+	if (fd == -1) {
+		return host;
+	}
+	char line[IMG_SHSIZE + 1];
+	ssize_t length = read(fd, line, IMG_SHSIZE);
+	close(fd);
+	if (length < 2 || line[0] != '#' || line[1] != '!') {
+		return host;
+	}
+	line[length] = '\0';
+	char *end = strchr(line, '\n');
+	if (end == NULL) {
+		return host;
+	}
+	*end = '\0';
+
+	char *interpreter = line + 2 + strspn(line + 2, " \t");
+	char *arg = interpreter + strcspn(interpreter, " \t");
+	if (*arg != '\0') {
+		*arg++ = '\0';
+		arg += strspn(arg, " \t");
+		for (char *last = arg + strlen(arg);
+				last > arg && (last[-1] == ' ' || last[-1] == '\t');
+				last--) {
+			last[-1] = '\0';
+		}
+	}
+	if (*interpreter == '\0') {
+		return host;
+	}
+
+	size_t argc = 0;
+	while (argv[argc] != NULL) {
+		argc++;
+	}
+	size_t interpreter_size = strlen(interpreter) + 1;
+	size_t pointers = (argc + 4) * sizeof(char *);
+	char **result = malloc(pointers + interpreter_size + strlen(arg) + 1);
+	if (result == NULL) {
+		return host;
+	}
+	char *strings = (char *)result + pointers;
+	memcpy(strings, interpreter, interpreter_size);
+	strcpy(strings + interpreter_size, arg);
+
+	size_t n = 0;
+	result[n++] = strings;
+	if (*arg != '\0') {
+		result[n++] = strings + interpreter_size;
+	}
+	result[n++] = (char *)path;
+	for (size_t i = 1; i < argc; i++) {
+		result[n++] = argv[i];
+	}
+	result[n] = NULL;
+	*script_argv = result;
+	return sysroot_host_path(strings, 0, buffer);
 }
 
 static void
