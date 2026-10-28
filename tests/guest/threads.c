@@ -25,6 +25,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <fcntl.h>
+#include <limits.h>
 #include <pthread.h>
 #include <pthread/qos.h>
 #include <stdatomic.h>
@@ -32,6 +34,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "check.h"
 
@@ -53,6 +56,9 @@ static void *increment(void *arg);
 static void initialize(void);
 static void *produce(void *arg);
 static void *read_and_write(void *arg);
+static void *change_directory(void *arg);
+
+extern int __pthread_fchdir(int fd);
 
 int
 main(void)
@@ -99,6 +105,14 @@ main(void)
 	}
 	CHECK(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) > start);
 	CHECK(qos_class_main() != QOS_CLASS_UNSPECIFIED);
+
+	char before[PATH_MAX], after[PATH_MAX];
+	CHECK(getcwd(before, sizeof(before)) != NULL);
+	pthread_t changer;
+	CHECK(pthread_create(&changer, NULL, change_directory, NULL) == 0);
+	CHECK(pthread_join(changer, NULL) == 0);
+	CHECK(getcwd(after, sizeof(after)) != NULL);
+	CHECK(strcmp(before, after) == 0);
 
 	char name[32];
 	CHECK(pthread_setname_np("limbo-main") == 0);
@@ -161,5 +175,23 @@ read_and_write(void *arg)
 		}
 		CHECK(pthread_rwlock_unlock(&rwlock) == 0);
 	}
+	return NULL;
+}
+
+static void *
+change_directory(void *arg)
+{
+	(void)arg;
+	char process[PATH_MAX], own[PATH_MAX];
+	CHECK(getcwd(process, sizeof(process)) != NULL);
+	int fd = open("/private/var", O_RDONLY | O_DIRECTORY);
+	CHECK(fd != -1);
+	CHECK(__pthread_fchdir(fd) == 0);
+	CHECK(close(fd) == 0);
+	CHECK(getcwd(own, sizeof(own)) != NULL);
+	CHECK(strcmp(own, "/private/var") == 0);
+	CHECK(__pthread_fchdir(-1) == 0);
+	CHECK(getcwd(own, sizeof(own)) != NULL);
+	CHECK(strcmp(own, process) == 0);
 	return NULL;
 }

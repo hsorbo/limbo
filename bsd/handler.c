@@ -48,6 +48,7 @@
 #include <mach/mach.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -3446,13 +3447,41 @@ sys_sendfile(int fd, int s, off_t offset, off_t *nbytes, void *hdtr, int flags)
 	unimplemented();
 }
 
+static __thread bool thread_directory;
+
+static int
+thread_directory_change(int (*change)(const void *), const void *to)
+{
+	if (!thread_directory) {
+		if (unshare(CLONE_FS) == -1) {
+			return errno_map(-1);
+		}
+		thread_directory = true;
+	}
+	return errno_map(change(to));
+}
+
+static int
+change_to_path(const void *path)
+{
+	return chdir(path);
+}
+
+static int
+change_to_descriptor(const void *fd)
+{
+	return fchdir((int)(intptr_t)fd);
+}
+
 int
 sys___pthread_chdir(user_addr_t path)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "__pthread_chdir(%p)\n", (void *)path);
+	fprintf(stderr, "__pthread_chdir(\"%s\")\n", (char *)path);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	return thread_directory_change(change_to_path,
+			sysroot_host_path(path, 0, buffer));
 }
 
 int
@@ -3461,7 +3490,16 @@ sys___pthread_fchdir(int fd)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "__pthread_fchdir(%p)\n", (void *)fd);
 #endif
-	unimplemented();
+	if (fd == -1) {
+		if (!thread_directory) {
+			return 0;
+		}
+		char path[64];
+		snprintf(path, sizeof(path), "/proc/%d/cwd", getpid());
+		return errno_map(chdir(path));
+	}
+	return thread_directory_change(change_to_descriptor,
+			(const void *)(intptr_t)fd);
 }
 
 int
