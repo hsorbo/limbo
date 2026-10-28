@@ -4796,7 +4796,12 @@ sys_task_read_for_pid(
 	fprintf(stderr, "task_read_for_pid(%p, %p, %p)\n", (void *)target_tport,
 			(void *)pid, (void *)t);
 #endif
-	unimplemented();
+
+	if (pid == getpid()) {
+		*t = ipc_task_self();
+		return KERN_SUCCESS;
+	}
+	return KERN_FAILURE;
 }
 
 user_ssize_t
