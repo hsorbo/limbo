@@ -37,7 +37,8 @@
 
 static void read_ids(FILE *status, const char *key, uint32_t ids[3]);
 static uint64_t boot_time(void);
-static ssize_t read_arguments(int32_t pid, char *arguments, size_t size);
+static ssize_t read_process_file(
+		int32_t pid, const char *file, char *buffer, size_t size);
 static ssize_t read_file(const char *name, char *buffer, size_t size);
 
 int
@@ -128,11 +129,17 @@ boot_time(void)
 	return btime;
 }
 
+ssize_t
+process_cmdline(int32_t pid, char *buffer, size_t size)
+{
+	return read_process_file(pid, "cmdline", buffer, size);
+}
+
 bool
 process_executable_path(int32_t pid, char *path)
 {
 	char arguments[PATH_MAX * 2];
-	ssize_t size = read_arguments(pid, arguments, sizeof(arguments) - 1);
+	ssize_t size = read_process_file(pid, "cmdline", arguments, sizeof(arguments) - 1);
 	if (size <= 0) {
 		return false;
 	}
@@ -145,11 +152,11 @@ process_executable_path(int32_t pid, char *path)
 }
 
 static ssize_t
-read_arguments(int32_t pid, char *arguments, size_t size)
+read_process_file(int32_t pid, const char *file, char *buffer, size_t size)
 {
 	char name[32 + NAME_MAX];
-	snprintf(name, sizeof(name), "/proc/%d/cmdline", (int)pid);
-	ssize_t length = read_file(name, arguments, size);
+	snprintf(name, sizeof(name), "/proc/%d/%s", (int)pid, file);
+	ssize_t length = read_file(name, buffer, size);
 	if (length != 0) {
 		return length;
 	}
@@ -164,9 +171,9 @@ read_arguments(int32_t pid, char *arguments, size_t size)
 		if (task->d_name[0] == '.') {
 			continue;
 		}
-		snprintf(name, sizeof(name), "/proc/%d/task/%s/cmdline",
-				(int)pid, task->d_name);
-		length = read_file(name, arguments, size);
+		snprintf(name, sizeof(name), "/proc/%d/task/%s/%s", (int)pid,
+				task->d_name, file);
+		length = read_file(name, buffer, size);
 	}
 	closedir(tasks);
 	return length;

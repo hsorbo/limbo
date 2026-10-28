@@ -31,6 +31,7 @@
 #endif
 
 #include <ctype.h>
+#include <limits.h>
 #include <mach/mach.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -41,6 +42,7 @@
 #include "handler.h"
 #include "process.h"
 #include "shared_cache.h"
+#include "sysroot.h"
 #include "xnu-errno.h"
 
 #ifdef __arm64__
@@ -91,6 +93,7 @@
 #define KERN_MAXFILESPERPROC 29
 #define KERN_USRSTACK64 59
 #define KERN_OSVERSION  65
+#define KERN_PROCARGS2  49
 
 #define KERN_PROC_PID 1
 
@@ -289,6 +292,7 @@ static const struct sysctl_node nodes[] = {
 };
 
 static int read_kinfo_proc(int32_t pid, void *old, size_t *oldlenp);
+static int read_procargs2(int32_t pid, void *old, size_t *oldlenp);
 static const struct sysctl_node *lookup_oid(const int *name, uint32_t namelen);
 static int name2oid(
 		const char *name, size_t namelen, void *old, size_t *oldlenp);
@@ -326,6 +330,9 @@ sys_sysctl(int *name, uint32_t namelen, void *old, size_t *oldlenp, void *new,
 		}
 		return read_bytes(node->name, strlen(node->name) + 1, old,
 				oldlenp);
+	}
+	if (namelen == 3 && name[0] == CTL_KERN && name[1] == KERN_PROCARGS2) {
+		return read_procargs2(name[2], old, oldlenp);
 	}
 
 	if (new != NULL) {
@@ -368,6 +375,59 @@ sys_sysctl(int *name, uint32_t namelen, void *old, size_t *oldlenp, void *new,
 		return _ENOENT;
 	}
 	return read_node(node, old, oldlenp);
+}
+
+static int
+read_procargs2(int32_t pid, void *old, size_t *oldlenp)
+{
+	char cmdline[16 * 1024];
+	ssize_t length = process_cmdline(pid, cmdline, sizeof(cmdline) - 1);
+	if (length <= 0) {
+		return _EINVAL;
+	}
+	cmdline[length] = '\0';
+	const char *arguments = cmdline;
+	const char *end = cmdline + length;
+	char path[PATH_MAX];
+	const char *first = cmdline;
+	const char *base = strrchr(first, '/');
+	if (strcmp(base != NULL ? base + 1 : first, "limbo") == 0
+			&& first + strlen(first) + 1 < end) {
+		const char *host = first + strlen(first) + 1;
+		snprintf(path, sizeof(path), "%s", sysroot_guest_path(host));
+		arguments = host + strlen(host) + 1;
+	} else {
+		char link[64];
+		snprintf(link, sizeof(link), "/proc/%d/exe", (int)pid);
+		ssize_t n = readlink(link, path, sizeof(path) - 1);
+		if (n <= 0) {
+			snprintf(path, sizeof(path), "%s", first);
+		} else {
+			path[n] = '\0';
+		}
+	}
+
+	int32_t argc = 0;
+	for (const char *a = arguments; a < end; a += strlen(a) + 1) {
+		argc++;
+	}
+	size_t path_size = (strlen(path) + 1 + 7) & ~(size_t)7;
+	size_t size = sizeof(argc) + path_size
+			+ (size_t)(end - arguments) + 1;
+	if (old == NULL) {
+		*oldlenp = size;
+		return 0;
+	}
+	if (*oldlenp < size) {
+		return _ENOMEM;
+	}
+	uint8_t *out = old;
+	memset(out, 0, size);
+	memcpy(out, &argc, sizeof(argc));
+	memcpy(out + sizeof(argc), path, strlen(path));
+	memcpy(out + sizeof(argc) + path_size, arguments, end - arguments);
+	*oldlenp = size;
+	return 0;
 }
 
 static int
