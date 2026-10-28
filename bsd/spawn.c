@@ -31,8 +31,10 @@
 #endif
 
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <spawn.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -107,6 +109,9 @@ static void convert_file_actions(const struct darwin_file_actions *src,
 static void close_unlisted(const struct darwin_file_actions *src,
 		posix_spawn_file_actions_t *dst);
 static bool fd_listed(const struct darwin_file_actions *actions, int fd);
+static int spawn_exec(const char *path, const struct darwin_spawnattr *attrp,
+		const struct darwin_file_actions *file_actions, char **argv,
+		char **envp);
 
 int
 sys_posix_spawn(void *pid, const char *path, void *adesc, char **argv,
@@ -124,6 +129,9 @@ sys_posix_spawn(void *pid, const char *path, void *adesc, char **argv,
 			= (args != NULL) ? args->attrp : NULL;
 	const struct darwin_file_actions *file_actions
 			= (args != NULL) ? args->file_actions : NULL;
+	if (attrp != NULL && (attrp->psa_flags & _POSIX_SPAWN_SETEXEC)) {
+		return spawn_exec(path, attrp, file_actions, argv, envp);
+	}
 
 	posix_spawnattr_t attr;
 	posix_spawnattr_init(&attr);
@@ -148,6 +156,45 @@ sys_posix_spawn(void *pid, const char *path, void *adesc, char **argv,
 	posix_spawn_file_actions_destroy(&actions);
 	posix_spawnattr_destroy(&attr);
 	return (result == 0) ? 0 : err_map(result);
+}
+
+static int
+spawn_exec(const char *path, const struct darwin_spawnattr *attrp,
+		const struct darwin_file_actions *file_actions, char **argv,
+		char **envp)
+{
+	if ((file_actions != NULL && file_actions->count > 0)
+			|| (attrp->psa_flags & _POSIX_SPAWN_START_SUSPENDED)) {
+		unimplemented();
+	}
+	if ((attrp->psa_flags & _POSIX_SPAWN_SETSID) && setsid() == -1) {
+		return err_map(errno);
+	}
+	if ((attrp->psa_flags & _POSIX_SPAWN_SETPGROUP)
+			&& setpgid(0, attrp->psa_pgroup) == -1) {
+		return err_map(errno);
+	}
+	if ((attrp->psa_flags & _POSIX_SPAWN_RESETIDS)
+			&& (setegid(getgid()) == -1 || seteuid(getuid()) == -1)) {
+		return err_map(errno);
+	}
+	if (attrp->psa_flags & _POSIX_SPAWN_SETSIGMASK) {
+		sigset_t set;
+		sigset_to_linux(attrp->psa_sigmask, &set);
+		sigdelset(&set, SIGSYS);
+		sigdelset(&set, SIGILL);
+		sigdelset(&set, SIGSEGV);
+		sigdelset(&set, SIGBUS);
+		sigprocmask(SIG_SETMASK, &set, NULL);
+	}
+
+	char buffer[PATH_MAX];
+	char **script_argv;
+	const char *host = exec_path(path, argv, buffer, &script_argv);
+	execve(host, (script_argv != NULL) ? script_argv : argv, envp);
+	int err = errno;
+	free(script_argv);
+	return err_map(err);
 }
 
 #define IMG_SHSIZE 512
@@ -220,9 +267,7 @@ exec_path(const char *path, char **argv, char *buffer, char ***script_argv)
 static void
 convert_attr(const struct darwin_spawnattr *src, posix_spawnattr_t *dst)
 {
-	if (src->psa_flags
-			& (_POSIX_SPAWN_SETEXEC
-					| _POSIX_SPAWN_START_SUSPENDED)) {
+	if (src->psa_flags & _POSIX_SPAWN_START_SUSPENDED) {
 		unimplemented();
 	}
 
