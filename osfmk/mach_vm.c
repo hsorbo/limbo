@@ -673,7 +673,30 @@ mach_vm_page_range_query(vm_map_read_t target_map, mach_vm_offset_t address,
 			(void *)target_map, (void *)address, (void *)size,
 			(void *)dispositions, (void *)dispositions_count);
 #endif
-	unimplemented();
+
+	mach_vm_address_t start = address & ~(mach_vm_address_t)PAGE_MASK;
+	mach_vm_size_t pages = (address + size - start + PAGE_MASK) / PAGE_SIZE;
+	if (pages > *dispositions_count) {
+		pages = *dispositions_count;
+	}
+	size_t host_page = getpagesize();
+	size_t per_page = PAGE_SIZE / host_page;
+	int *out = (int *)dispositions;
+	unsigned char resident[PAGE_SIZE / 4096];
+	for (mach_vm_size_t i = 0; i < pages; i++) {
+		void *page = (void *)(start + i * PAGE_SIZE);
+		int disposition = 0;
+		if (mincore(page, PAGE_SIZE, resident) == 0) {
+			for (size_t j = 0; j < per_page; j++) {
+				if (resident[j] & 1) {
+					disposition = VM_PAGE_QUERY_PAGE_PRESENT;
+				}
+			}
+		}
+		out[i] = disposition;
+	}
+	*dispositions_count = pages;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
