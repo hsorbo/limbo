@@ -29,6 +29,7 @@
 #include <mach/mach.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 #include "ipc.h"
@@ -108,6 +109,33 @@ _kernelrpc_mach_ports_lookup3(task_t target_task, mach_port_t *port1,
 	return KERN_SUCCESS;
 }
 
+static kern_return_t memory_and_time_info(task_flavor_t flavor,
+		task_info_t out, mach_msg_type_number_t *count);
+
+/* Darwin's pages, which the guest's sizes count in */
+#ifdef __x86_64__
+#define GUEST_PAGE_SIZE 4096
+#else
+#define GUEST_PAGE_SIZE 16384
+#endif
+
+/* The bounds of a macOS process's map */
+#define GUEST_MIN_ADDRESS 0x100000000ULL
+#define GUEST_MAX_ADDRESS 0x7ffffe000000ULL
+
+/* TASK_BASIC_INFO_64 on arm64, whichever the headers were built for */
+#define TASK_BASIC_INFO_64_ARM 18
+#pragma pack(push, 4)
+struct task_basic_info_64_arm {
+	integer_t suspend_count;
+	mach_vm_size_t virtual_size;
+	mach_vm_size_t resident_size;
+	time_value_t user_time;
+	time_value_t system_time;
+	policy_t policy;
+};
+#pragma pack(pop)
+
 kern_return_t
 task_info(task_name_t target_task, task_flavor_t flavor,
 		task_info_t task_info_out,
@@ -134,12 +162,171 @@ task_info(task_name_t target_task, task_flavor_t flavor,
 		info->all_image_info_format = TASK_DYLD_ALL_IMAGE_INFO_64;
 		*task_info_outCnt = TASK_DYLD_INFO_COUNT;
 	} break;
+	case MACH_TASK_BASIC_INFO:
+	case TASK_BASIC_INFO_64_ARM:
+	case TASK_VM_INFO:
+	case TASK_VM_INFO_PURGEABLE:
+	case TASK_THREAD_TIMES_INFO:
+	case TASK_EVENTS_INFO:
+	case TASK_POWER_INFO:
+	case TASK_POWER_INFO_V2:
+	case TASK_FLAGS_INFO:
+		return memory_and_time_info(flavor, task_info_out,
+				task_info_outCnt);
 	default:
-		unimplemented();
+#ifdef ENABLE_STRACE
+		fprintf(stderr, "  task_info: no flavor %d\n", flavor);
+#endif
+		return KERN_INVALID_ARGUMENT;
 	}
 
 	return KERN_SUCCESS;
 }
+
+struct memory_usage {
+	uint64_t virtual_size;
+	uint64_t resident_size;
+	uint64_t resident_peak;
+};
+
+static void
+memory_usage(struct memory_usage *usage)
+{
+	memset(usage, 0, sizeof(*usage));
+	long page = sysconf(_SC_PAGESIZE);
+	FILE *statm = fopen("/proc/self/statm", "r");
+	if (statm != NULL) {
+		unsigned long size, resident;
+		if (fscanf(statm, "%lu %lu", &size, &resident) == 2) {
+			usage->virtual_size = (uint64_t)size * page;
+			usage->resident_size = (uint64_t)resident * page;
+		}
+		fclose(statm);
+	}
+	FILE *status = fopen("/proc/self/status", "r");
+	if (status != NULL) {
+		char line[256];
+		unsigned long kilobytes;
+		while (fgets(line, sizeof(line), status) != NULL) {
+			if (sscanf(line, "VmHWM: %lu kB", &kilobytes) == 1) {
+				usage->resident_peak = (uint64_t)kilobytes * 1024;
+			}
+		}
+		fclose(status);
+	}
+	if (usage->resident_peak < usage->resident_size) {
+		usage->resident_peak = usage->resident_size;
+	}
+}
+
+static void
+time_value(const struct timeval *from, time_value_t *to)
+{
+	to->seconds = (integer_t)from->tv_sec;
+	to->microseconds = (integer_t)from->tv_usec;
+}
+
+static kern_return_t
+memory_and_time_info(task_flavor_t flavor, task_info_t out,
+		mach_msg_type_number_t *count)
+{
+	struct memory_usage usage;
+	memory_usage(&usage);
+	struct rusage rusage;
+	getrusage(RUSAGE_SELF, &rusage);
+
+	union {
+		struct mach_task_basic_info basic;
+		struct task_basic_info_64_arm basic_64;
+		struct task_vm_info vm;
+		struct task_thread_times_info times;
+		struct task_events_info events;
+		struct task_power_info_v2 power;
+		struct task_flags_info flags;
+	} info;
+	memset(&info, 0, sizeof(info));
+	mach_msg_type_number_t size;
+	switch (flavor) {
+	case MACH_TASK_BASIC_INFO:
+		info.basic.virtual_size = usage.virtual_size;
+		info.basic.resident_size = usage.resident_size;
+		info.basic.resident_size_max = usage.resident_peak;
+		time_value(&rusage.ru_utime, &info.basic.user_time);
+		time_value(&rusage.ru_stime, &info.basic.system_time);
+		info.basic.policy = POLICY_TIMESHARE;
+		size = MACH_TASK_BASIC_INFO_COUNT;
+		break;
+	case TASK_BASIC_INFO_64_ARM:
+		info.basic_64.virtual_size = usage.virtual_size;
+		info.basic_64.resident_size = usage.resident_size;
+		time_value(&rusage.ru_utime, &info.basic_64.user_time);
+		time_value(&rusage.ru_stime, &info.basic_64.system_time);
+		info.basic_64.policy = POLICY_TIMESHARE;
+		size = sizeof(info.basic_64) / sizeof(natural_t);
+		break;
+	case TASK_VM_INFO:
+	case TASK_VM_INFO_PURGEABLE:
+		info.vm.virtual_size = usage.virtual_size;
+		info.vm.page_size = GUEST_PAGE_SIZE;
+		info.vm.resident_size = usage.resident_size;
+		info.vm.resident_size_peak = usage.resident_peak;
+		info.vm.internal = usage.resident_size;
+		info.vm.internal_peak = usage.resident_peak;
+		info.vm.phys_footprint = usage.resident_size;
+		info.vm.ledger_phys_footprint_peak = (int64_t)usage.resident_peak;
+		info.vm.min_address = GUEST_MIN_ADDRESS;
+		info.vm.max_address = GUEST_MAX_ADDRESS;
+		info.vm.limit_bytes_remaining = INT64_MAX;
+		size = TASK_VM_INFO_COUNT;
+		break;
+	case TASK_THREAD_TIMES_INFO:
+		time_value(&rusage.ru_utime, &info.times.user_time);
+		time_value(&rusage.ru_stime, &info.times.system_time);
+		size = TASK_THREAD_TIMES_INFO_COUNT;
+		break;
+	case TASK_EVENTS_INFO:
+		info.events.faults = (integer_t)rusage.ru_minflt;
+		info.events.pageins = (integer_t)rusage.ru_majflt;
+		info.events.csw = (integer_t)(rusage.ru_nvcsw + rusage.ru_nivcsw);
+		size = TASK_EVENTS_INFO_COUNT;
+		break;
+	case TASK_POWER_INFO:
+	case TASK_POWER_INFO_V2:
+		info.power.cpu_energy.total_user = (uint64_t)rusage.ru_utime.tv_sec
+						* 1000000000
+				+ (uint64_t)rusage.ru_utime.tv_usec * 1000;
+		info.power.cpu_energy.total_system
+				= (uint64_t)rusage.ru_stime.tv_sec * 1000000000
+				+ (uint64_t)rusage.ru_stime.tv_usec * 1000;
+		size = (flavor == TASK_POWER_INFO) ? TASK_POWER_INFO_COUNT
+						   : TASK_POWER_INFO_V2_COUNT;
+		break;
+	case TASK_FLAGS_INFO:
+		info.flags.flags = TF_LP64 | TF_64B_DATA;
+		size = TASK_FLAGS_INFO_COUNT;
+		break;
+	default:
+		return KERN_INVALID_ARGUMENT;
+	}
+	if (*count < size) {
+		size = *count;
+	}
+	memcpy(out, &info, size * sizeof(natural_t));
+	*count = size;
+	return KERN_SUCCESS;
+}
+
+static kern_return_t memory_and_time_info(task_flavor_t flavor,
+		task_info_t out, mach_msg_type_number_t *count);
+
+#ifdef __x86_64__
+#define GUEST_PAGE_SIZE 4096
+#else
+#define GUEST_PAGE_SIZE 16384
+#endif
+
+#define GUEST_MIN_ADDRESS 0x100000000ULL
+#define GUEST_MAX_ADDRESS 0x7ffffe000000ULL
 
 kern_return_t
 task_set_info(task_t target_task, task_flavor_t flavor,
