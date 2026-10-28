@@ -120,6 +120,17 @@ run(int argc, char *argv[], char *envp[])
 		fprintf(stderr, "limbo: failed to load binary\n");
 		return 1;
 	}
+#ifdef __arm64__
+	/* Leave pointer authentication off, as XNU does for an arm64 process,
+	 * and for an arm64e one too. Linux gives each exec keys of its own, so
+	 * with them on, the shared cache's signed pointers differ in every
+	 * process and the prepared cache can't be shared. It must be off
+	 * before the shared cache's pointers are signed */
+	prctl(PR_PAC_SET_ENABLED_KEYS,
+			PR_PAC_APIAKEY | PR_PAC_APIBKEY | PR_PAC_APDAKEY
+					| PR_PAC_APDBKEY,
+			0, 0, 0);
+#endif
 
 	/* Map the interpreter (dyld); a preload binary runs its own entry */
 	char dylinker_host_path[PATH_MAX];
