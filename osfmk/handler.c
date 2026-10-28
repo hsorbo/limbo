@@ -59,6 +59,7 @@
 #include <unistd.h>
 
 #include "commpage.h"
+#include "bsd/xnu-errno.h"
 #include "handler.h"
 #include "ipc.h"
 #include "mach_vm.h"
@@ -844,6 +845,23 @@ sys_pfz_exit(int32_t dummy)
 }
 
 uint64_t
+sys_exclaves_ctl(uint64_t operation, uint64_t arg1, uint64_t arg2,
+		uint64_t arg3, uint64_t arg4)
+{
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "exclaves_ctl(%p, %p, %p, %p, %p)\n",
+			(void *)operation, (void *)arg1, (void *)arg2,
+			(void *)arg3, (void *)arg4);
+#endif
+	(void)operation;
+	(void)arg1;
+	(void)arg2;
+	(void)arg3;
+	(void)arg4;
+	return _ENOTSUP;
+}
+
+uint64_t
 sys_osfmk(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		uint64_t arg4, uint64_t arg5, uint64_t arg6, uint64_t *sp)
 {
@@ -1048,7 +1066,7 @@ sys_osfmk(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 	case 0x57:
 		return sys_kern_invalid();
 	case 0x58:
-		return sys_kern_invalid();
+		return sys_exclaves_ctl(arg1, arg2, arg3, arg4, arg5);
 	case 0x59:
 		return sys_mach_timebase_info_trap((void *)arg1);
 	case 0x5a:
