@@ -389,8 +389,9 @@ code_directory_string(const struct signature *signature, uint32_t field,
 static int
 reply_blob(const uint8_t *blob, void *buffer, size_t size)
 {
+	/* No entitlements: success with nothing written, as macOS answers */
 	if (blob == NULL) {
-		return _ENOENT;
+		return 0;
 	}
 	uint32_t length = big(blob + 4);
 	if (size < length) {
