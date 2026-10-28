@@ -3266,7 +3266,24 @@ sys_process_policy(int scope, int action, int policy, int policy_subtype,
 			(void *)policy_subtype, (void *)attrp,
 			(void *)target_pid, (void *)target_threadid);
 #endif
-	unimplemented();
+
+	enum {
+		PROC_POLICY_ACTION_APPLY = 1,
+		PROC_POLICY_ACTION_RESTORE = 2,
+		PROC_POLICY_ACTION_ENABLE = 5,
+		PROC_POLICY_ACTION_DISABLE = 6,
+		PROC_POLICY_ACTION_SET = 10,
+	};
+	switch (action) {
+	case PROC_POLICY_ACTION_APPLY:
+	case PROC_POLICY_ACTION_RESTORE:
+	case PROC_POLICY_ACTION_ENABLE:
+	case PROC_POLICY_ACTION_DISABLE:
+	case PROC_POLICY_ACTION_SET:
+		return 0;
+	default:
+		unimplemented();
+	}
 }
 
 int
