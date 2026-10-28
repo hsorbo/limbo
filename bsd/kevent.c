@@ -131,6 +131,8 @@ struct knote {
 	bool woken;
 	bool waiting;
 	bool deleted;
+	bool in_flight;
+	bool defer_delete;
 
 	uint32_t sock_interest;
 	uint32_t sock_reported;
@@ -468,13 +470,20 @@ kevent_internal(struct kqueue *kq, const struct kevent_qos_s *changes,
 	int nerrors = 0;
 	for (int i = 0; i < nchanges; i++) {
 		int error = kevent_register(kq, &changes[i]);
-		if ((error != 0 || (changes[i].flags & EV_RECEIPT))
-				&& nerrors < nevents) {
-			events[nerrors] = changes[i];
-			events[nerrors].flags |= EV_ERROR;
-			events[nerrors].data = -error;
-			nerrors++;
+		if (error == 0 && !(changes[i].flags & EV_RECEIPT)) {
+			continue;
 		}
+
+		if (nerrors >= nevents) {
+			if (error != 0) {
+				return error;
+			}
+			continue;
+		}
+		events[nerrors] = changes[i];
+		events[nerrors].flags |= EV_ERROR;
+		events[nerrors].data = -error;
+		nerrors++;
 	}
 
 	kqueue_request(kq, false);
@@ -537,6 +546,16 @@ kevent_register(struct kqueue *kq, const struct kevent_qos_s *change)
 					? 0
 					: _ENOENT;
 		}
+		if (kn->in_flight && !(change->flags & EV_ENABLE)) {
+#ifdef ENABLE_STRACE
+			fprintf(stderr, "  kevent: the delete of %#lx waits for "
+					"its event in flight\n",
+					(unsigned long)kn->kev.ident);
+#endif
+			kn->defer_delete = true;
+			kn->disabled = true;
+			return _EINPROGRESS;
+		}
 		if (change->filter == EVFILT_WORKLOOP
 				&& (change->fflags & NOTE_WL_COMMANDS_MASK)
 						== NOTE_WL_SYNC_WAKE) {
@@ -561,6 +580,11 @@ kevent_register(struct kqueue *kq, const struct kevent_qos_s *change)
 		kn->disabled = true;
 	}
 	if (change->flags & EV_ENABLE) {
+		kn->in_flight = false;
+		if (kn->defer_delete) {
+			knote_detach(kn);
+			return 0;
+		}
 		kn->disabled = false;
 	}
 
@@ -1344,6 +1368,11 @@ knote_delivered(struct knote *kn)
 
 	if (kn->kev.filter == EVFILT_SOCK) {
 		kn->sock_reported |= kn->kev.fflags;
+	}
+
+	if ((kn->kev.flags & (EV_DISPATCH | EV_UDATA_SPECIFIC))
+			== (EV_DISPATCH | EV_UDATA_SPECIFIC)) {
+		kn->in_flight = true;
 	}
 
 	if (kn->kev.flags & EV_ONESHOT) {

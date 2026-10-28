@@ -21,6 +21,7 @@ guest_tests = [
   'filesystem.c',
   'hello.c',
   'kqueue.c',
+  'kqueue_dispatch2.c',
   'mach.c',
   'paths.c',
   'sandbox.c',
