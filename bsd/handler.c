@@ -2126,6 +2126,9 @@ sys_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t pos)
 	if (flags & 0x1000)
 		tflags |= MAP_ANON;
 
+	if ((tflags & MAP_ANON) && (tflags & MAP_PRIVATE))
+		tflags |= MAP_NORESERVE;
+
 	/* TODO: Be responsible and convert the protection properly */
 	void *r;
 #ifdef __x86_64__

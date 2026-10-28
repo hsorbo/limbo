@@ -101,7 +101,8 @@ map_anonymous(mach_vm_address_t *address, mach_vm_size_t size,
 				? MAP_FIXED
 				: MAP_FIXED_NOREPLACE;
 		base = mmap((void *)*address, size, protection,
-				MAP_PRIVATE | MAP_ANON | placement, -1, 0);
+				MAP_PRIVATE | MAP_ANON | MAP_NORESERVE | placement,
+				-1, 0);
 	}
 	if (base == MAP_FAILED) {
 		return KERN_NO_SPACE;
@@ -117,7 +118,7 @@ map_aligned(mach_vm_size_t size, mach_vm_offset_t mask, vm_prot_t protection)
 	mach_vm_size_t padded_size = size + mask + 1;
 #ifdef __x86_64__
 	uint8_t *padded = mmap(NULL, padded_size, protection,
-			MAP_PRIVATE | MAP_ANON, -1, 0);
+			MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
 	if (padded == MAP_FAILED) {
 		return MAP_FAILED;
 	}
@@ -126,7 +127,8 @@ map_aligned(mach_vm_size_t size, mach_vm_offset_t mask, vm_prot_t protection)
 	uint8_t *padded;
 	while (true) {
 		padded = mmap((void *)bump, padded_size, protection,
-				MAP_PRIVATE | MAP_ANON | MAP_FIXED_NOREPLACE,
+				MAP_PRIVATE | MAP_ANON | MAP_NORESERVE
+						| MAP_FIXED_NOREPLACE,
 				-1, 0);
 		bump += (padded_size + PAGE_MASK) & ~(uintptr_t)PAGE_MASK;
 		if (padded != MAP_FAILED) {
