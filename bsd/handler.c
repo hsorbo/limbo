@@ -55,6 +55,7 @@
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/random.h>
@@ -69,6 +70,8 @@
 #include <sys/uio.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <linux/fs.h>
+#include <sys/xattr.h>
 #include <ucontext.h>
 #include <unistd.h>
 
@@ -194,6 +197,11 @@ static short poll_events_from_linux(short events);
 static struct timeval *convert_timevals(
 		const void *tptr, struct timeval *times);
 static unsigned int rename_flags(uint32_t flags);
+static int clone_file(int src_fd, int dst_dirfd, const char *dst_host,
+		uint32_t flags);
+
+#define _CLONE_NOFOLLOW     0x0001
+#define _CLONE_NOOWNERCOPY  0x0002
 static int signal_mask(int how, const uint32_t *set, uint32_t *oset);
 static int rlimit_resource(uint32_t which);
 static uint64_t rlimit_to_darwin(rlim_t value);
@@ -4111,8 +4119,37 @@ sys_clonefileat(int src_dirfd, user_addr_t src, int dst_dirfd, user_addr_t dst,
 			(void *)src, (void *)dst_dirfd, (void *)dst,
 			(void *)flags);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	const char *host = sysroot_host_path(src,
+			(flags & _CLONE_NOFOLLOW) ? AT_SYMLINK_NOFOLLOW : 0,
+			buffer);
+	struct stat st;
+	if (fstatat(at_fd(src_dirfd), host, &st,
+			    (flags & _CLONE_NOFOLLOW) ? AT_SYMLINK_NOFOLLOW : 0)
+			== -1) {
+		return err_map(errno);
+	}
+	char dst_buffer[PATH_MAX];
+	const char *dst_host = sysroot_host_path(dst, 0, dst_buffer);
+	if (S_ISLNK(st.st_mode)) {
+		char target[PATH_MAX];
+		ssize_t length = readlinkat(at_fd(src_dirfd), host, target,
+				sizeof(target) - 1);
+		if (length == -1) {
+			return err_map(errno);
+		}
+		target[length] = '\0';
+		return errno_map(symlinkat(target, at_fd(dst_dirfd), dst_host));
+	}
+	int fd = openat(at_fd(src_dirfd), host, O_RDONLY | O_CLOEXEC);
+	if (fd == -1) {
+		return err_map(errno);
+	}
+	int result = clone_file(fd, at_fd(dst_dirfd), dst_host, flags);
+	close(fd);
+	return result;
 }
+
 
 int
 sys_openat(int fd, user_addr_t path, int flags, int mode)
@@ -4506,7 +4543,69 @@ sys_fclonefileat(int src_fd, int dst_dirfd, user_addr_t dst, uint32_t flags)
 	fprintf(stderr, "fclonefileat(%p, %p, %p, %p)\n", (void *)src_fd,
 			(void *)dst_dirfd, (void *)dst, (void *)flags);
 #endif
-	unimplemented();
+	char buffer[PATH_MAX];
+	return clone_file(src_fd, at_fd(dst_dirfd),
+			sysroot_host_path(dst, 0, buffer), flags);
+}
+
+static int
+clone_file(int src_fd, int dst_dirfd, const char *dst_host, uint32_t flags)
+{
+	struct stat st;
+	if (fstat(src_fd, &st) == -1) {
+		return err_map(errno);
+	}
+	if (!S_ISREG(st.st_mode)) {
+		return S_ISDIR(st.st_mode) ? _ENOTSUP : _EINVAL;
+	}
+	int dst_fd = openat(dst_dirfd, dst_host,
+			O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+			st.st_mode & 07777);
+	if (dst_fd == -1) {
+		return err_map(errno);
+	}
+	int error = 0;
+	if (ioctl(dst_fd, FICLONE, src_fd) == -1) {
+		off_t in = 0, out = 0;
+		while (in < st.st_size) {
+			ssize_t copied = copy_file_range(src_fd, &in, dst_fd,
+					&out, st.st_size - in, 0);
+			if (copied <= 0) {
+				char chunk[65536];
+				ssize_t n = pread(
+						src_fd, chunk, sizeof(chunk), in);
+				if (n <= 0 || pwrite(dst_fd, chunk, n, out) != n) {
+					error = (n < 0) ? errno : EIO;
+					break;
+				}
+				in += n;
+				out += n;
+			}
+		}
+	}
+	if (error == 0) {
+		char names[4096];
+		ssize_t length = flistxattr(src_fd, names, sizeof(names));
+		for (ssize_t i = 0; i < length; i += strlen(names + i) + 1) {
+			char value[65536];
+			ssize_t size = fgetxattr(
+					src_fd, names + i, value, sizeof(value));
+			if (size >= 0) {
+				fsetxattr(dst_fd, names + i, value, size, 0);
+			}
+		}
+		if (!(flags & _CLONE_NOOWNERCOPY) && geteuid() == 0) {
+			fchown(dst_fd, st.st_uid, st.st_gid);
+		}
+		struct timespec times[2] = {st.st_atim, st.st_mtim};
+		futimens(dst_fd, times);
+	}
+	close(dst_fd);
+	if (error != 0) {
+		unlinkat(dst_dirfd, dst_host, 0);
+		return err_map(error);
+	}
+	return 0;
 }
 
 int
