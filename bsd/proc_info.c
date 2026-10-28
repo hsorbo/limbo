@@ -159,8 +159,6 @@ struct proc_taskallinfo {
 #define PROC_PIDPATHINFO 11
 
 #define PROC_PIDPLATFORMINFO 30
-#define PLATFORM_MACOS 1
-
 static int pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer,
 		int32_t buffersize);
 static void uniqidentifierinfo(const struct process *process,
@@ -298,7 +296,7 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 		return length;
 	}
 	case PROC_PIDPLATFORMINFO: {
-		uint32_t platform = PLATFORM_MACOS;
+		uint32_t platform = codesign_platform(pid);
 		if (buffersize < (int32_t)sizeof(platform)) {
 			return _ENOMEM;
 		}
