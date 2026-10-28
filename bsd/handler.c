@@ -60,7 +60,9 @@
 #include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
+#include <time.h>
 #include <semaphore.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -3880,7 +3882,10 @@ sys_thread_selfusage(void)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "thread_selfusage()\n");
 #endif
-	unimplemented();
+
+	struct timespec time;
+	syscall(SYS_clock_gettime, CLOCK_THREAD_CPUTIME_ID, &time);
+	return (uint64_t)time.tv_sec * 1000000000 + (uint64_t)time.tv_nsec;
 }
 
 int
