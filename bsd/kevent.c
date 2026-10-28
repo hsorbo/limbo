@@ -41,6 +41,7 @@
 #include <strings.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -59,6 +60,7 @@
 #define EVFILT_MACHPORT -8
 #define EVFILT_TIMER    -7
 #define EVFILT_USER     -10
+#define EVFILT_SOCK     -13
 #define EVFILT_WORKLOOP -17
 
 #define EV_ADD            0x0001
@@ -129,9 +131,20 @@ struct knote {
 	bool woken;
 	bool waiting;
 	bool deleted;
+
+	uint32_t sock_interest;
+	uint32_t sock_reported;
 	uint64_t deadline;
 	uint64_t interval;
 };
+
+#define NOTE_CONNRESET    0x00000001
+#define NOTE_READCLOSED   0x00000002
+#define NOTE_WRITECLOSED  0x00000004
+#define NOTE_CONNECTED    0x00000800
+#define NOTE_DISCONNECTED 0x00001000
+#define SOCKEV_CONNECTED    0x00000001
+#define SOCKEV_DISCONNECTED 0x00000002
 
 struct __darwin_kevent {
 	uint64_t ident;
@@ -221,6 +234,9 @@ static uint32_t thread_qos(int32_t priority);
 static int kqueue_wait(struct kqueue *kq, struct kevent_qos_s *events,
 		int nevents, int64_t timeout);
 static void kqueue_poll(struct kqueue *kq, int timeout);
+static bool sock_ready(struct knote *kn);
+static void fd_watch_wake(void);
+static void fd_watch_start(void);
 static int kqueue_collect(struct kqueue *kq, bool manager,
 		struct kevent_qos_s *events, int max_events, uint8_t **data,
 		size_t *data_size);
@@ -592,6 +608,12 @@ knote_attach(struct kqueue *kq, const struct kevent_qos_s *change)
 	if (kn->kev.filter == EVFILT_SIGNAL) {
 		signals_watch((int)kn->kev.ident, true);
 	}
+	if (kq->kind != KQUEUE_FD
+			&& (kn->kev.filter == EVFILT_READ
+					|| kn->kev.filter == EVFILT_WRITE
+					|| kn->kev.filter == EVFILT_SOCK)) {
+		fd_watch_start();
+	}
 	return kn;
 }
 
@@ -635,6 +657,10 @@ knote_touch(struct knote *kn, const struct kevent_qos_s *change)
 		return 0;
 	case EVFILT_WORKLOOP:
 		return workloop_touch(kn, change);
+	case EVFILT_SOCK:
+		kn->sock_interest = change->fflags;
+		memcpy(kn->kev.ext, change->ext, sizeof(kn->kev.ext));
+		return 0;
 	default:
 		kn->kev.fflags = change->fflags;
 		memcpy(kn->kev.ext, change->ext, sizeof(kn->kev.ext));
@@ -905,6 +931,7 @@ kqueue_request(struct kqueue *kq, bool manager)
 	}
 
 	uint32_t qos;
+	fd_watch_wake();
 	if (kq->bound[manager] || kq->requested[manager] || kq->owner != NULL
 			|| !kqueue_deliverable(kq, manager, &qos)) {
 		return;
@@ -912,6 +939,114 @@ kqueue_request(struct kqueue *kq, bool manager)
 
 	kq->requested[manager] = true;
 	workq_request_kqueue(kq, qos, manager);
+}
+
+/*
+ * The descriptors of the knotes of the workqueue and the workloops, which
+ * no thread waits on as a kqueue's own do: a thread of limbo's polls them,
+ * and requests a thread for a kqueue as one of them becomes ready. Only the
+ * kqueues that no thread is requested or bound for, which look again
+ * themselves as they go back to the kernel
+ */
+static int fd_watch_event = -1;
+
+static void
+fd_watch_wake(void)
+{
+	if (fd_watch_event != -1) {
+		eventfd_write(fd_watch_event, 1);
+	}
+}
+
+struct fd_watched {
+	struct kqueue *kq;
+	bool manager;
+};
+
+static void *
+fd_watch_main(void *arg)
+{
+	size_t capacity = 64;
+	struct pollfd *fds = malloc(capacity * sizeof(*fds));
+	struct fd_watched *watched = malloc(capacity * sizeof(*watched));
+	pthread_mutex_lock(&lock);
+	while (true) {
+		nfds_t count = 1;
+		fds[0] = (struct pollfd){.fd = fd_watch_event, .events = POLLIN};
+		for (struct kqueue *kq = &workq_kqueue; kq != NULL;
+				kq = kqueue_next(kq)) {
+			if (kq->kind == KQUEUE_FD) {
+				break;
+			}
+			for (struct knote *kn = kq->knotes; kn != NULL;
+					kn = kn->next) {
+				short events = 0;
+				if (kn->kev.filter == EVFILT_READ) {
+					events = POLLIN;
+				} else if (kn->kev.filter == EVFILT_WRITE) {
+					events = POLLOUT;
+				} else if (kn->kev.filter == EVFILT_SOCK) {
+					events = POLLRDHUP;
+					if ((kn->sock_interest & NOTE_CONNECTED)
+							&& !(kn->sock_reported
+									& NOTE_CONNECTED)) {
+						events |= POLLOUT;
+					}
+				}
+				if (events == 0 || kn->disabled
+						|| kq->requested[kn->manager]
+						|| kq->bound[kn->manager]
+						|| kq->owner != NULL) {
+					continue;
+				}
+				if (count == capacity) {
+					capacity *= 2;
+					fds = realloc(fds, capacity * sizeof(*fds));
+					watched = realloc(watched,
+							capacity * sizeof(*watched));
+				}
+				watched[count] = (struct fd_watched){
+						kq, kn->manager};
+				fds[count++] = (struct pollfd){
+						.fd = (int)kn->kev.ident,
+						.events = events};
+			}
+		}
+		pthread_mutex_unlock(&lock);
+		poll(fds, count, 100);
+		if (fds[0].revents & POLLIN) {
+			eventfd_t value;
+			eventfd_read(fd_watch_event, &value);
+		}
+		pthread_mutex_lock(&lock);
+		for (nfds_t i = 1; i < count; i++) {
+			if (fds[i].revents != 0) {
+#ifdef ENABLE_STRACE
+				fprintf(stderr, "  fd watch: %d ready, %#x, kq %#lx\n",
+						fds[i].fd, fds[i].revents,
+						watched[i].kq->id);
+#endif
+				kqueue_request(watched[i].kq, watched[i].manager);
+			}
+		}
+	}
+	return NULL;
+}
+
+static void
+fd_watch_start(void)
+{
+	if (fd_watch_event != -1) {
+		return;
+	}
+	fd_watch_event = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	sigset_t all, previous;
+	sigfillset(&all);
+	pthread_sigmask(SIG_SETMASK, &all, &previous);
+	pthread_t handle;
+	pthread_create(&handle, NULL, fd_watch_main, NULL);
+	pthread_detach(handle);
+	pthread_sigmask(SIG_SETMASK, &previous, NULL);
 }
 
 static bool
@@ -953,9 +1088,60 @@ knote_active(struct knote *kn)
 		return fd_ready(kn);
 	case EVFILT_MACHPORT:
 		return ipc_port_peek(kn->kev.ident);
+	case EVFILT_SOCK:
+		return sock_ready(kn);
 	default:
 		return kn->active;
 	}
+}
+
+/*
+ * A socket's events since they were last told, of those the knote watches
+ * for: connected, its connection lost or refused, its reading side closed.
+ * The error of a failed connection stays for SO_ERROR to read
+ */
+static uint32_t
+sock_events(int fd, uint32_t *state)
+{
+	struct pollfd pfd = {.fd = fd, .events = POLLOUT | POLLRDHUP};
+	*state = 0;
+	if (poll(&pfd, 1, 0) != 1 || (pfd.revents & POLLNVAL)) {
+		return 0;
+	}
+	uint32_t events = 0;
+	struct sockaddr_storage peer;
+	socklen_t length = sizeof(peer);
+	bool connected = (pfd.revents & POLLOUT)
+			&& getpeername(fd, (struct sockaddr *)&peer, &length) == 0;
+	if (connected) {
+		events |= NOTE_CONNECTED;
+		*state |= SOCKEV_CONNECTED;
+	}
+	if (pfd.revents & (POLLERR | POLLHUP)) {
+		events |= NOTE_DISCONNECTED | NOTE_WRITECLOSED;
+		if (!connected) {
+			events |= NOTE_CONNRESET;
+		}
+		*state |= SOCKEV_DISCONNECTED;
+	}
+	if (pfd.revents & (POLLRDHUP | POLLHUP)) {
+		events |= NOTE_READCLOSED;
+	}
+	return events;
+}
+
+static bool
+sock_ready(struct knote *kn)
+{
+	uint32_t state;
+	uint32_t events = sock_events((int)kn->kev.ident, &state)
+			& kn->sock_interest & ~kn->sock_reported;
+	if (events == 0) {
+		return false;
+	}
+	kn->kev.fflags = events;
+	kn->kev.data = state;
+	return true;
 }
 
 static bool
@@ -1156,7 +1342,18 @@ knote_delivered(struct knote *kn)
 		return;
 	}
 
+	if (kn->kev.filter == EVFILT_SOCK) {
+		kn->sock_reported |= kn->kev.fflags;
+	}
+
 	if (kn->kev.flags & EV_ONESHOT) {
+
+		if ((kn->kev.flags & (EV_DISPATCH | EV_UDATA_SPECIFIC))
+				== (EV_DISPATCH | EV_UDATA_SPECIFIC)) {
+			kn->disabled = true;
+			kn->active = false;
+			return;
+		}
 		knote_detach(kn);
 		return;
 	}
@@ -1223,7 +1420,8 @@ kevent_close(int fd)
 		while (kn != NULL) {
 			struct knote *next = kn->next;
 			if ((kn->kev.filter == EVFILT_READ
-					    || kn->kev.filter == EVFILT_WRITE)
+					    || kn->kev.filter == EVFILT_WRITE
+					    || kn->kev.filter == EVFILT_SOCK)
 					&& kn->kev.ident == (uint64_t)fd) {
 				knote_detach(kn);
 			}
