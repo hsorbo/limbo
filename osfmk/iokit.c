@@ -34,6 +34,7 @@
 #include <sys/mman.h>
 
 #include "ipc.h"
+#include "osserialize.h"
 
 #define kOSSerializeBinarySignature 0x000000d3
 #define kOSSerializeEndCollection   0x80000000
@@ -55,6 +56,8 @@ struct identity_property {
 struct io_iterator {
 	bool yielded;
 };
+
+static kern_return_t exhausted_iterator(mach_port_t *empty);
 
 static const char platform_expert;
 #define PLATFORM_EXPERT ((void *)&platform_expert)
@@ -162,6 +165,15 @@ match_iterator(mach_port_t *existing)
 	return KERN_SUCCESS;
 }
 
+static kern_return_t
+exhausted_iterator(mach_port_t *empty)
+{
+	struct io_iterator *iterator = calloc(1, sizeof(*iterator));
+	iterator->yielded = true;
+	*empty = ipc_kobject_alloc(IPC_KOBJECT_IO_OBJECT, iterator);
+	return KERN_SUCCESS;
+}
+
 kern_return_t
 is_io_registry_entry_get_property(mach_port_t registry_entry,
 		io_name_t property_name, io_buf_ptr_t *properties,
@@ -245,9 +257,10 @@ is_io_registry_create_iterator(mach_port_t main_port,
 		mach_port_t *iterator)
 {
 #ifdef ENABLE_STRACE
-	fprintf(stderr, "is_io_registry_create_iterator\n");
+	fprintf(stderr, "is_io_registry_create_iterator(%s)\n", plane);
 #endif
-	unimplemented();
+
+	return exhausted_iterator(iterator);
 }
 
 kern_return_t
@@ -256,7 +269,7 @@ is_io_registry_iterator_enter_entry(mach_port_t iterator)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "is_io_registry_iterator_enter_entry\n");
 #endif
-	unimplemented();
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -265,7 +278,7 @@ is_io_registry_iterator_exit_entry(mach_port_t iterator)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "is_io_registry_iterator_exit_entry\n");
 #endif
-	unimplemented();
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -298,7 +311,18 @@ is_io_registry_entry_get_properties(mach_port_t registry_entry,
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "is_io_registry_entry_get_properties\n");
 #endif
-	unimplemented();
+
+	struct os_object *empty = os_dictionary_create();
+	size_t size;
+	void *serialized = os_serialize(empty, &size);
+	os_release(empty);
+	void *copy = mmap(NULL, size, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANON, -1, 0);
+	memcpy(copy, serialized, size);
+	free(serialized);
+	*properties = copy;
+	*propertiesCnt = size;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -344,7 +368,7 @@ is_io_registry_entry_get_parent_iterator(mach_port_t registry_entry,
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "is_io_registry_entry_get_parent_iterator\n");
 #endif
-	unimplemented();
+	return exhausted_iterator(iterator);
 }
 
 kern_return_t
@@ -498,7 +522,9 @@ is_io_iterator_is_valid(mach_port_t iterator,
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "is_io_iterator_is_valid\n");
 #endif
-	unimplemented();
+
+	*is_valid = TRUE;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -1054,7 +1080,44 @@ is_io_registry_entry_get_properties_bin_buf(mach_port_t registry_entry,
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "is_io_registry_entry_get_properties_bin_buf\n");
 #endif
-	unimplemented();
+
+	struct os_object *dictionary = os_dictionary_create();
+	if (ipc_kobject_lookup(registry_entry, IPC_KOBJECT_IO_OBJECT)
+			== PLATFORM_EXPERT) {
+		identity_lookup("");
+		for (size_t i = 0; i < sizeof(identity) / sizeof(identity[0]);
+				i++) {
+			const struct identity_property *prop = &identity[i];
+			if (((const char *)prop->value)[0] == '\0') {
+				continue;
+			}
+			os_dictionary_set(dictionary, prop->name,
+					prop->kind == IDENTITY_STRING
+							? os_string_create(
+									  prop->value)
+							: os_data_create(prop->value,
+									  prop->len));
+		}
+	}
+	size_t size;
+	void *serialized = os_serialize(dictionary, &size);
+	os_release(dictionary);
+
+	*properties = NULL;
+	*propertiesCnt = 0;
+	if (buf != 0 && *bufsize >= size) {
+		memcpy((void *)buf, serialized, size);
+		*bufsize = size;
+	} else {
+		void *copy = mmap(NULL, size, PROT_READ | PROT_WRITE,
+				MAP_PRIVATE | MAP_ANON, -1, 0);
+		memcpy(copy, serialized, size);
+		*properties = copy;
+		*propertiesCnt = size;
+		*bufsize = 0;
+	}
+	free(serialized);
+	return KERN_SUCCESS;
 }
 
 kern_return_t

@@ -413,6 +413,25 @@ os_symbol_create(const char *name)
 	return object;
 }
 
+struct os_object *
+os_string_create(const char *string)
+{
+	struct os_object *object = os_symbol_create(string);
+	object->type = OS_STRING;
+	return object;
+}
+
+struct os_object *
+os_data_create(const void *bytes, size_t size)
+{
+	struct os_object *object = object_create(OS_DATA);
+	object->data.bytes = malloc(size + 1);
+	memcpy(object->data.bytes, bytes, size);
+	object->data.bytes[size] = '\0';
+	object->data.size = size;
+	return object;
+}
+
 bool
 os_number_value(const struct os_object *number, uint64_t *value)
 {
