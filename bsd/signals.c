@@ -49,6 +49,14 @@
 
 #define DARWIN_NSIG 32
 
+#ifdef __x86_64__
+#define LIMBO_KEEPS_SIGILL 0
+#define REPORTS_SIGFPE     1
+#else
+#define LIMBO_KEEPS_SIGILL 1
+#define REPORTS_SIGFPE     0
+#endif
+
 #ifndef SA_RESTORER
 #define SA_RESTORER 0x04000000
 #endif
@@ -57,7 +65,9 @@
 #define _SIG_IGN 1
 #define _SIG_HOLD 5
 
+#define _SIGILL  4
 #define _SIGTRAP 5
+#define _SIGFPE  8
 #define _SIGKILL 9
 #define _SIGBUS  10
 #define _SIGSEGV 11
@@ -92,6 +102,14 @@
 
 #define ARM_THREAD_STATE64_FLAGS_NO_PTRAUTH 0x1
 #define PSTATE_NZCV                         0xf0000000u
+
+#define FXSAVE_REGISTERS 416
+#define FXSAVE_MXCSR     24
+#define FXSAVE_MXCSR_MASK 28
+
+#define X86_FLAGS_USER 0xcd5
+
+#define HANDLER_STACK_ROOM (16 * 1024)
 
 struct darwin_sigaction_in {
 	uint64_t handler;
@@ -135,6 +153,29 @@ struct darwin_ucontext {
 	uint64_t uc_mcontext;
 };
 
+#ifdef __x86_64__
+
+struct darwin_mcontext {
+	struct {
+		uint16_t trapno;
+		uint16_t cpu;
+		uint32_t err;
+		uint64_t faultvaddr;
+	} es;
+	struct {
+		uint64_t rax, rbx, rcx, rdx, rdi, rsi, rbp, rsp;
+		uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+		uint64_t rip, rflags, cs, fs, gs;
+	} ss;
+	struct {
+		int32_t reserved[2];
+
+		uint8_t fxsave[FXSAVE_REGISTERS];
+		uint8_t reserved4[96];
+		int32_t reserved1;
+	} __attribute__((packed)) fs;
+};
+#else
 struct darwin_mcontext {
 	struct {
 		uint64_t far;
@@ -157,6 +198,8 @@ struct darwin_mcontext {
 	} __attribute__((aligned(16))) ns;
 };
 
+#endif
+
 struct darwin_sigframe {
 	struct darwin_siginfo sinfo;
 	struct darwin_ucontext uctx;
@@ -165,7 +208,13 @@ struct darwin_sigframe {
 
 _Static_assert(sizeof(struct darwin_siginfo) == 104, "siginfo");
 _Static_assert(sizeof(struct darwin_ucontext) == 56, "ucontext");
+#ifdef __x86_64__
+_Static_assert(sizeof(struct darwin_mcontext) == 712, "mcontext");
+#else
 _Static_assert(sizeof(struct darwin_mcontext) == 816, "mcontext");
+#endif
+
+#ifndef __x86_64__
 
 #define FPSIMD_MAGIC 0x46508001
 #define ESR_MAGIC    0x45535201
@@ -186,6 +235,7 @@ struct linux_esr {
 	struct linux_ctx_head head;
 	uint64_t esr;
 };
+#endif
 
 struct action {
 	uint64_t handler;
@@ -194,7 +244,6 @@ struct action {
 	int32_t flags;
 };
 
-#ifndef __x86_64__
 static struct action actions[DARWIN_NSIG];
 static pthread_mutex_t actions_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -221,8 +270,11 @@ static void build_frame(struct darwin_sigframe *frame, const ucontext_t *uc,
 static void restore_frame(ucontext_t *uc, const struct darwin_ucontext *duc);
 static uint32_t guest_mask(const ucontext_t *uc);
 static void set_guest_mask(sigset_t *set, uint32_t mask);
+#ifndef __x86_64__
 static struct linux_fpsimd *find_fpsimd(const ucontext_t *uc);
 static uint64_t find_esr(const ucontext_t *uc);
+#endif
+static uint64_t context_sp(const ucontext_t *uc);
 static bool on_altstack(uint64_t sp);
 static bool is_fault(int sig);
 static int code_from_linux(int sig, int code);
@@ -246,6 +298,10 @@ signals_init(void)
 	install_host_action(_SIGTRAP);
 	install_host_action(_SIGSEGV);
 	install_host_action(_SIGBUS);
+#ifdef __x86_64__
+	install_host_action(_SIGILL);
+	install_host_action(_SIGFPE);
+#endif
 }
 
 int
@@ -295,7 +351,7 @@ static void
 install_host_action(int sig)
 {
 	int host = signo_to_linux(sig);
-	if (host == 0 || host == SIGSYS || host == SIGILL) {
+	if (host == 0 || host == SIGSYS || (LIMBO_KEEPS_SIGILL && host == SIGILL)) {
 		return;
 	}
 
@@ -306,14 +362,19 @@ install_host_action(int sig)
 					|| (action->handler == _SIG_DFL
 							&& default_ignores(sig)));
 
-	bool report = is_fault(host) && host != SIGFPE
+	bool report = is_fault(host) && (REPORTS_SIGFPE || host != SIGFPE)
 			&& action->handler == _SIG_DFL;
 	struct sigaction act;
 	memset(&act, 0, sizeof(act));
 	if (action->handler > _SIG_HOLD || watched || report) {
 		act.sa_sigaction = syscall_signal_handler;
+#ifdef __x86_64__
+
+		act.sa_flags = SA_SIGINFO;
+#else
 		act.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTORER;
 		act.sa_restorer = limbo_rt_sigreturn;
+#endif
 		if (action->flags & _SA_RESTART) {
 			act.sa_flags |= SA_RESTART;
 		}
@@ -419,6 +480,9 @@ signals_handle(int sig, siginfo_t *info, ucontext_t *uc,
 
 	if (is_fault(sig) && info->si_code > 0) {
 		if (!caught || context != SIGNAL_IN_GUEST) {
+#ifdef __x86_64__
+			syscall_report_fault(sig, info, uc);
+#else
 			fprintf(stderr, "limbo: fatal signal %d (code %d) at %llx%s, "
 					"address %p\n",
 					sig, info->si_code,
@@ -430,6 +494,7 @@ signals_handle(int sig, siginfo_t *info, ucontext_t *uc,
 				syscall_print_guest_chain(&uc->uc_mcontext);
 			}
 			signal(sig, SIG_DFL);
+#endif
 			return;
 		}
 	}
@@ -517,25 +582,48 @@ deliver(ucontext_t *uc, int sig, const siginfo_t *info)
 	}
 
 	mcontext_t *mc = &uc->uc_mcontext;
-	bool onstack = on_altstack(mc->sp);
+	bool onstack = on_altstack(context_sp(uc));
 	bool use_altstack = (action.flags & _SA_ONSTACK)
 			&& !(guest_altstack.ss_flags & _SS_DISABLE) && !onstack;
 	uint64_t sp = use_altstack
 			? guest_altstack.ss_sp + guest_altstack.ss_size
-			: mc->sp - C_64_REDZONE_LEN;
+			: context_sp(uc) - C_64_REDZONE_LEN;
+#ifdef __x86_64__
+
+	uint64_t here = (uint64_t)__builtin_frame_address(0)
+			- HANDLER_STACK_ROOM;
+	if (!use_altstack && here < sp) {
+		sp = here;
+	}
+#endif
 	sp = (sp - sizeof(struct darwin_sigframe)) & ~(uint64_t)15;
 
 	struct darwin_sigframe *frame = (void *)sp;
 	build_frame(frame, uc, sig, info, onstack);
 
+	uint64_t style = (action.flags & _SA_SIGINFO) ? UC_FLAVOR : UC_TRAD;
+#ifdef __x86_64__
+
+	greg_t *regs = mc->gregs;
+	regs[REG_RIP] = action.tramp;
+	regs[REG_RSP] = sp - 8;
+	*(uint64_t *)(sp - 8) = 0;
+	regs[REG_RDI] = action.handler;
+	regs[REG_RSI] = style;
+	regs[REG_RDX] = sig;
+	regs[REG_RCX] = (uint64_t)&frame->sinfo;
+	regs[REG_R8] = (uint64_t)&frame->uctx;
+	regs[REG_R9] = (uint64_t)&frame->uctx ^ token_key;
+#else
 	mc->pc = action.tramp;
 	mc->sp = sp;
 	mc->regs[0] = action.handler;
-	mc->regs[1] = (action.flags & _SA_SIGINFO) ? UC_FLAVOR : UC_TRAD;
+	mc->regs[1] = style;
 	mc->regs[2] = sig;
 	mc->regs[3] = (uint64_t)&frame->sinfo;
 	mc->regs[4] = (uint64_t)&frame->uctx;
 	mc->regs[5] = (uint64_t)&frame->uctx ^ token_key;
+#endif
 
 	uint32_t mask = frame->uctx.uc_sigmask | action.mask;
 	if (!(action.flags & _SA_NODEFER)) {
@@ -584,6 +672,36 @@ build_frame(struct darwin_sigframe *frame, const ucontext_t *uc, int sig,
 	duc->uc_mcontext = (uint64_t)&frame->mctx;
 
 	struct darwin_mcontext *dmc = &frame->mctx;
+#ifdef __x86_64__
+	const greg_t *regs = mc->gregs;
+	dmc->es.trapno = (uint16_t)regs[REG_TRAPNO];
+	dmc->es.err = (uint32_t)regs[REG_ERR];
+	dmc->es.faultvaddr = is_fault(info->si_signo)
+			? (uint64_t)info->si_addr
+			: 0;
+	dmc->ss.rax = regs[REG_RAX];
+	dmc->ss.rbx = regs[REG_RBX];
+	dmc->ss.rcx = regs[REG_RCX];
+	dmc->ss.rdx = regs[REG_RDX];
+	dmc->ss.rdi = regs[REG_RDI];
+	dmc->ss.rsi = regs[REG_RSI];
+	dmc->ss.rbp = regs[REG_RBP];
+	dmc->ss.rsp = regs[REG_RSP];
+	dmc->ss.r8 = regs[REG_R8];
+	dmc->ss.r9 = regs[REG_R9];
+	dmc->ss.r10 = regs[REG_R10];
+	dmc->ss.r11 = regs[REG_R11];
+	dmc->ss.r12 = regs[REG_R12];
+	dmc->ss.r13 = regs[REG_R13];
+	dmc->ss.r14 = regs[REG_R14];
+	dmc->ss.r15 = regs[REG_R15];
+	dmc->ss.rip = regs[REG_RIP];
+	dmc->ss.rflags = regs[REG_EFL];
+	dmc->ss.cs = regs[REG_CSGSFS] & 0xffff;
+	if (mc->fpregs != NULL) {
+		memcpy(dmc->fs.fxsave, mc->fpregs, FXSAVE_REGISTERS);
+	}
+#else
 	dmc->es.far = mc->fault_address;
 	dmc->es.esr = find_esr(uc);
 	memcpy(dmc->ss.x, mc->regs, sizeof(dmc->ss.x));
@@ -599,6 +717,7 @@ build_frame(struct darwin_sigframe *frame, const ucontext_t *uc, int sig,
 		dmc->ns.fpsr = fp->fpsr;
 		dmc->ns.fpcr = fp->fpcr;
 	}
+#endif
 }
 
 static void
@@ -606,6 +725,40 @@ restore_frame(ucontext_t *uc, const struct darwin_ucontext *duc)
 {
 	mcontext_t *mc = &uc->uc_mcontext;
 	const struct darwin_mcontext *dmc = (const void *)duc->uc_mcontext;
+#ifdef __x86_64__
+	greg_t *regs = mc->gregs;
+	regs[REG_RAX] = dmc->ss.rax;
+	regs[REG_RBX] = dmc->ss.rbx;
+	regs[REG_RCX] = dmc->ss.rcx;
+	regs[REG_RDX] = dmc->ss.rdx;
+	regs[REG_RDI] = dmc->ss.rdi;
+	regs[REG_RSI] = dmc->ss.rsi;
+	regs[REG_RBP] = dmc->ss.rbp;
+	regs[REG_RSP] = dmc->ss.rsp;
+	regs[REG_R8] = dmc->ss.r8;
+	regs[REG_R9] = dmc->ss.r9;
+	regs[REG_R10] = dmc->ss.r10;
+	regs[REG_R11] = dmc->ss.r11;
+	regs[REG_R12] = dmc->ss.r12;
+	regs[REG_R13] = dmc->ss.r13;
+	regs[REG_R14] = dmc->ss.r14;
+	regs[REG_R15] = dmc->ss.r15;
+	regs[REG_RIP] = dmc->ss.rip;
+	regs[REG_EFL] = (regs[REG_EFL] & ~(greg_t)X86_FLAGS_USER)
+			| (dmc->ss.rflags & X86_FLAGS_USER);
+	if (mc->fpregs != NULL) {
+
+		uint8_t *fx = (uint8_t *)mc->fpregs;
+		uint32_t mask;
+		memcpy(&mask, fx + FXSAVE_MXCSR_MASK, sizeof(mask));
+		memcpy(fx, dmc->fs.fxsave, FXSAVE_REGISTERS);
+		uint32_t mxcsr;
+		memcpy(&mxcsr, fx + FXSAVE_MXCSR, sizeof(mxcsr));
+		mxcsr &= (mask != 0) ? mask : 0xffbf;
+		memcpy(fx + FXSAVE_MXCSR, &mxcsr, sizeof(mxcsr));
+		memcpy(fx + FXSAVE_MXCSR_MASK, &mask, sizeof(mask));
+	}
+#else
 	memcpy(mc->regs, dmc->ss.x, sizeof(dmc->ss.x));
 	mc->regs[29] = dmc->ss.fp;
 	mc->regs[30] = dmc->ss.lr;
@@ -619,6 +772,7 @@ restore_frame(ucontext_t *uc, const struct darwin_ucontext *duc)
 		fp->fpsr = dmc->ns.fpsr;
 		fp->fpcr = dmc->ns.fpcr;
 	}
+#endif
 	set_guest_mask(&uc->uc_sigmask, duc->uc_sigmask & ~cantmask);
 }
 
@@ -650,7 +804,7 @@ sys_sigaltstack(void *nss, void *oss)
 	fprintf(stderr, "sigaltstack(%p, %p)\n", (void *)nss, (void *)oss);
 #endif
 	ucontext_t *trap = syscall_trap_context();
-	bool onstack = trap != NULL && on_altstack(trap->uc_mcontext.sp);
+	bool onstack = trap != NULL && on_altstack(context_sp(trap));
 	struct darwin_stack old = guest_altstack;
 	if (onstack) {
 		old.ss_flags |= _SS_ONSTACK;
@@ -758,6 +912,17 @@ set_guest_mask(sigset_t *set, uint32_t mask)
 	sigdelset(set, SIGBUS);
 }
 
+static uint64_t
+context_sp(const ucontext_t *uc)
+{
+#ifdef __x86_64__
+	return (uint64_t)uc->uc_mcontext.gregs[REG_RSP];
+#else
+	return uc->uc_mcontext.sp;
+#endif
+}
+
+#ifndef __x86_64__
 static const struct linux_ctx_head *
 find_record(const ucontext_t *uc, uint32_t magic)
 {
@@ -788,6 +953,7 @@ find_esr(const ucontext_t *uc)
 	const struct linux_esr *esr = (const void *)find_record(uc, ESR_MAGIC);
 	return (esr != NULL) ? esr->esr : 0;
 }
+#endif
 
 static bool
 on_altstack(uint64_t sp)
@@ -833,81 +999,3 @@ code_from_linux(int sig, int code)
 	}
 	return code;
 }
-#else
-int
-sys_sigaction(int signum, void *nsa, void *osa)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "sigaction(%p, %p, %p)\n", (void *)signum, (void *)nsa,
-			(void *)osa);
-#endif
-
-	return 0;
-}
-
-int
-sys_sigreturn(void *uctx, int infostyle, user_addr_t token)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "sigreturn(%p, %p, %p)\n", (void *)uctx,
-			(void *)infostyle, (void *)token);
-#endif
-
-	return 0;
-}
-
-int
-sys_sigaltstack(void *nss, void *oss)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "sigaltstack(%p, %p)\n", (void *)nss, (void *)oss);
-#endif
-
-	return 0;
-}
-
-int
-sys_sigpending(void *osv)
-{
-#ifdef ENABLE_STRACE
-	fprintf(stderr, "sigpending(%p)\n", (void *)osv);
-#endif
-	unimplemented();
-}
-
-void
-signals_fork_child(void)
-{
-}
-
-void
-signals_watch(int sig, bool watch)
-{
-}
-
-int
-signals_mask(int how, const uint32_t *set, uint32_t *oset)
-{
-	sigset_t linux_set, old;
-	sigset_t *new_set = NULL;
-	if (set != NULL) {
-		if (how < _SIG_BLOCK || how > _SIG_SETMASK) {
-			return _EINVAL;
-		}
-		sigset_to_linux(*set, &linux_set);
-		sigdelset(&linux_set, SIGSYS);
-		sigdelset(&linux_set, SIGILL);
-		new_set = &linux_set;
-	}
-
-	int error = pthread_sigmask(
-			how - _SIG_BLOCK + SIG_BLOCK, new_set, &old);
-	if (error != 0) {
-		return err_map(error);
-	}
-	if (oset != NULL) {
-		*oset = sigset_from_linux(&old);
-	}
-	return 0;
-}
-#endif

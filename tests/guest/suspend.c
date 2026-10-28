@@ -54,6 +54,28 @@ block(void *arg)
 }
 
 static void
+stopped_at(mach_port_t port, uintptr_t *pc, uintptr_t *sp)
+{
+#ifdef __x86_64__
+	x86_thread_state64_t state;
+	mach_msg_type_number_t count = x86_THREAD_STATE64_COUNT;
+	CHECK(thread_get_state(port, x86_THREAD_STATE64, (thread_state_t)&state,
+			      &count)
+			== KERN_SUCCESS);
+	*pc = state.__rip;
+	*sp = state.__rsp;
+#else
+	arm_thread_state64_t state;
+	mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
+	CHECK(thread_get_state(port, ARM_THREAD_STATE64, (thread_state_t)&state,
+			      &count)
+			== KERN_SUCCESS);
+	*pc = (uintptr_t)__darwin_arm_thread_state64_get_pc(state);
+	*sp = (uintptr_t)__darwin_arm_thread_state64_get_sp(state);
+#endif
+}
+
+static void
 check_running_thread(void)
 {
 	pthread_t thread;
@@ -65,12 +87,8 @@ check_running_thread(void)
 	usleep(100000);
 	CHECK(counter == before);
 
-	arm_thread_state64_t state;
-	mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
-	CHECK(thread_get_state(port, ARM_THREAD_STATE64,
-			      (thread_state_t)&state, &count)
-			== KERN_SUCCESS);
-	uintptr_t pc = (uintptr_t)__darwin_arm_thread_state64_get_pc(state);
+	uintptr_t pc, sp;
+	stopped_at(port, &pc, &sp);
 	CHECK(pc >= (uintptr_t)spin && pc < (uintptr_t)spin + 64);
 
 	CHECK(thread_resume(port) == KERN_SUCCESS);
@@ -88,12 +106,9 @@ check_blocked_thread(void)
 	usleep(100000);
 	mach_port_t port = pthread_mach_thread_np(thread);
 	CHECK(thread_suspend(port) == KERN_SUCCESS);
-	arm_thread_state64_t state;
-	mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
-	CHECK(thread_get_state(port, ARM_THREAD_STATE64,
-			      (thread_state_t)&state, &count)
-			== KERN_SUCCESS);
-	CHECK(__darwin_arm_thread_state64_get_sp(state) != 0);
+	uintptr_t pc, sp;
+	stopped_at(port, &pc, &sp);
+	CHECK(sp != 0);
 	write(fds[1], "x", 1);
 	usleep(100000);
 	CHECK(got == 0);
