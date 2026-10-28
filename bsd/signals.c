@@ -57,7 +57,10 @@
 #define _SIG_IGN 1
 #define _SIG_HOLD 5
 
+#define _SIGTRAP 5
 #define _SIGKILL 9
+#define _SIGBUS  10
+#define _SIGSEGV 11
 #define _SIGSTOP 17
 
 #define _SA_ONSTACK   0x0001
@@ -240,6 +243,9 @@ signals_init(void)
 		}
 	}
 	getrandom(&token_key, sizeof(token_key), 0);
+	install_host_action(_SIGTRAP);
+	install_host_action(_SIGSEGV);
+	install_host_action(_SIGBUS);
 }
 
 int
@@ -299,9 +305,12 @@ install_host_action(int sig)
 			&& (action->handler == _SIG_IGN
 					|| (action->handler == _SIG_DFL
 							&& default_ignores(sig)));
+
+	bool report = is_fault(host) && host != SIGFPE
+			&& action->handler == _SIG_DFL;
 	struct sigaction act;
 	memset(&act, 0, sizeof(act));
-	if (action->handler > _SIG_HOLD || watched) {
+	if (action->handler > _SIG_HOLD || watched || report) {
 		act.sa_sigaction = syscall_signal_handler;
 		act.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTORER;
 		act.sa_restorer = limbo_rt_sigreturn;
@@ -410,6 +419,16 @@ signals_handle(int sig, siginfo_t *info, ucontext_t *uc,
 
 	if (is_fault(sig) && info->si_code > 0) {
 		if (!caught || context != SIGNAL_IN_GUEST) {
+			fprintf(stderr, "limbo: fatal signal %d (code %d) at %llx%s, "
+					"address %p\n",
+					sig, info->si_code,
+					(unsigned long long)uc->uc_mcontext.pc,
+					context == SIGNAL_IN_GUEST ? ""
+								   : " in limbo",
+					info->si_addr);
+			if (context == SIGNAL_IN_GUEST) {
+				syscall_print_guest_chain(&uc->uc_mcontext);
+			}
 			signal(sig, SIG_DFL);
 			return;
 		}

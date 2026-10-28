@@ -1045,10 +1045,8 @@ kobject_server(mach_msg_header_t *request)
 	reply->NDR = NDR_record;
 
 	if (routine == NULL) {
-#ifdef ENABLE_STRACE
-		fprintf(stderr, ">> Unknown kernel object message ID: %d\n",
+		fprintf(stderr, "limbo: unknown kernel object message ID %d\n",
 				id);
-#endif
 		reply->RetCode = MIG_BAD_ID;
 	} else {
 		routine(request, &reply->Head);
