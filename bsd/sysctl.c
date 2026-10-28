@@ -57,17 +57,29 @@
 #define CTL_KERN   1
 #define CTL_HW     6
 
+#define CTL_SYSCTL_NAME     1
 #define CTL_SYSCTL_NAME2OID 3
+#define CTL_SYSCTL_OIDFMT   4
+
+#define CTLTYPE_INT    2
+#define CTLTYPE_STRING 3
+#define CTLTYPE_QUAD   4
+#define CTLTYPE_OPAQUE 5
+#define CTLFLAG_RD     0x80000000
 
 #define KERN_OSTYPE     1
 #define KERN_OSRELEASE  2
 #define KERN_OSREV      3
 #define KERN_VERSION    4
+#define KERN_MAXPROC    6
+#define KERN_MAXFILES   7
 #define KERN_ARGMAX     8
 #define KERN_SECURELVL  9
 #define KERN_HOSTNAME   10
+#define KERN_HOSTID     11
 #define KERN_PROC       14
 #define KERN_BOOTTIME   21
+#define KERN_MAXFILESPERPROC 29
 #define KERN_USRSTACK64 59
 #define KERN_OSVERSION  65
 
@@ -163,10 +175,20 @@ static const struct sysctl_node nodes[] = {
 				  "root:xnu-13432.1.9~1/RELEASE_X86_64"},
 		{"kern.argmax", {CTL_KERN, KERN_ARGMAX}, SYSCTL_INT,
 				.number = 1048576},
+
+		{"kern.maxproc", {CTL_KERN, KERN_MAXPROC}, SYSCTL_INT,
+				.number = 12000},
+		{"kern.maxfiles", {CTL_KERN, KERN_MAXFILES}, SYSCTL_INT,
+				.number = 368640},
+		{"kern.maxfilesperproc", {CTL_KERN, KERN_MAXFILESPERPROC},
+				SYSCTL_INT, .number = 184320},
+		{"kern.maxprocperuid", {0, 0}, SYSCTL_INT, .number = 8000},
 		{"kern.securelevel", {CTL_KERN, KERN_SECURELVL}, SYSCTL_INT,
 				.number = 0},
 		{"kern.hostname", {CTL_KERN, KERN_HOSTNAME}, SYSCTL_READER,
 				.reader = read_hostname},
+
+		{"kern.hostid", {CTL_KERN, KERN_HOSTID}, SYSCTL_INT, .number = 0},
 		{"kern.boottime", {CTL_KERN, KERN_BOOTTIME}, SYSCTL_READER,
 				.reader = read_boottime},
 		{"kern.usrstack64", {CTL_KERN, KERN_USRSTACK64}, SYSCTL_QUAD,
@@ -179,6 +201,12 @@ static const struct sysctl_node nodes[] = {
 		{"kern.osproductversion", {0, 0}, SYSCTL_STRING,
 				.string = "27.0"},
 		{"kern.secure_kernel", {0, 0}, SYSCTL_INT, .number = 0},
+
+		{"kern.iossupportversion", {0, 0}, SYSCTL_STRING,
+				.string = "27.0"},
+
+		{"kern.osvariant_status", {0, 0}, SYSCTL_QUAD,
+				.number = (int64_t)8070732011310449290ULL},
 		{"hw.machine", {CTL_HW, HW_MACHINE}, SYSCTL_STRING,
 				.string = HOST_MACHINE},
 		{"hw.model", {CTL_HW, HW_MODEL}, SYSCTL_STRING,
@@ -209,6 +237,27 @@ static const struct sysctl_node nodes[] = {
 		{"hw.cpusubtype", {0, 0}, SYSCTL_READER,
 				.reader = read_cpusubtype},
 		{"hw.cpu64bit_capable", {0, 0}, SYSCTL_INT, .number = 1},
+		{"hw.ephemeral_storage", {0, 0}, SYSCTL_INT, .number = 0},
+
+		{"hw.nperflevels", {0, 0}, SYSCTL_INT, .number = 1},
+		{"hw.perflevel0.physicalcpu", {0, 0}, SYSCTL_READER,
+				.reader = read_ncpu},
+		{"hw.perflevel0.physicalcpu_max", {0, 0}, SYSCTL_READER,
+				.reader = read_ncpu},
+		{"hw.perflevel0.logicalcpu", {0, 0}, SYSCTL_READER,
+				.reader = read_ncpu},
+		{"hw.perflevel0.logicalcpu_max", {0, 0}, SYSCTL_READER,
+				.reader = read_ncpu},
+		{"hw.perflevel0.cpusperl2", {0, 0}, SYSCTL_READER,
+				.reader = read_ncpu},
+		{"hw.perflevel0.l1icachesize", {0, 0}, SYSCTL_INT,
+				.number = 196608},
+		{"hw.perflevel0.l1dcachesize", {0, 0}, SYSCTL_INT,
+				.number = 131072},
+		{"hw.perflevel0.l2cachesize", {0, 0}, SYSCTL_INT,
+				.number = 16777216},
+		{"hw.perflevel0.name", {0, 0}, SYSCTL_STRING,
+				.string = "Performance"},
 		{"security.mac.lockdown_mode_state", {0, 0}, SYSCTL_INT,
 				.number = 0},
 };
@@ -217,6 +266,7 @@ static int read_kinfo_proc(int32_t pid, void *old, size_t *oldlenp);
 static const struct sysctl_node *lookup_oid(const int *name, uint32_t namelen);
 static int name2oid(
 		const char *name, size_t namelen, void *old, size_t *oldlenp);
+static int oid_format(const int *oid, void *old, size_t *oldlenp);
 static const struct sysctl_node *lookup_name(const char *name, size_t namelen);
 static void node_oid(const struct sysctl_node *node, int oid[2]);
 static int read_node(
@@ -237,6 +287,19 @@ sys_sysctl(int *name, uint32_t namelen, void *old, size_t *oldlenp, void *new,
 	if (namelen == 2 && name[0] == CTL_UNSPEC
 			&& name[1] == CTL_SYSCTL_NAME2OID) {
 		return name2oid(new, newlen, old, oldlenp);
+	}
+	if (namelen == 4 && name[0] == CTL_UNSPEC
+			&& name[1] == CTL_SYSCTL_OIDFMT) {
+		return oid_format(name + 2, old, oldlenp);
+	}
+	if (namelen == 4 && name[0] == CTL_UNSPEC
+			&& name[1] == CTL_SYSCTL_NAME) {
+		const struct sysctl_node *node = lookup_oid(name + 2, 2);
+		if (node == NULL) {
+			return _ENOENT;
+		}
+		return read_bytes(node->name, strlen(node->name) + 1, old,
+				oldlenp);
 	}
 
 	if (new != NULL) {
@@ -330,6 +393,53 @@ name2oid(const char *name, size_t namelen, void *old, size_t *oldlenp)
 	int oid[2];
 	node_oid(node, oid);
 	return read_bytes(oid, sizeof(oid), old, oldlenp);
+}
+
+static int
+oid_format(const int *oid, void *old, size_t *oldlenp)
+{
+	const struct sysctl_node *node = lookup_oid(oid, 2);
+	if (node == NULL) {
+		return _ENOENT;
+	}
+	uint32_t kind;
+	const char *format;
+	switch (node->kind) {
+	case SYSCTL_STRING:
+		kind = CTLTYPE_STRING;
+		format = "A";
+		break;
+	case SYSCTL_QUAD:
+		kind = CTLTYPE_QUAD;
+		format = "Q";
+		break;
+	case SYSCTL_READER:
+		if (node->reader == read_boottime) {
+			kind = CTLTYPE_OPAQUE;
+			format = "S,timeval";
+		} else if (node->reader == read_hostname
+				|| node->reader == read_bootsessionuuid) {
+			kind = CTLTYPE_STRING;
+			format = "A";
+		} else if (node->reader == read_memsize) {
+			kind = CTLTYPE_QUAD;
+			format = "Q";
+		} else {
+			kind = CTLTYPE_INT;
+			format = "I";
+		}
+		break;
+	default:
+		kind = CTLTYPE_INT;
+		format = "I";
+		break;
+	}
+	uint8_t buffer[16] = {0};
+	uint32_t value = kind | CTLFLAG_RD;
+	memcpy(buffer, &value, sizeof(value));
+	memcpy(buffer + sizeof(value), format, strlen(format) + 1);
+	return read_bytes(buffer, sizeof(value) + strlen(format) + 1, old,
+			oldlenp);
 }
 
 int
