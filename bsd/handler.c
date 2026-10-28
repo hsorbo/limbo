@@ -229,7 +229,7 @@ open_follow(int flags)
 int
 open_flags(int flags)
 {
-	int cflags = 0;
+	int cflags = O_NOCTTY;
 	if (flags & _O_RDONLY)
 		cflags |= O_RDONLY;
 	if (flags & _O_WRONLY)
