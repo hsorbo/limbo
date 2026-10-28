@@ -40,6 +40,7 @@
 
 #include "bsd/xnu-errno.h"
 #include "sysroot.h"
+#include "bsd/codesign.h"
 
 #define _F_DUPFD                    0
 #define _F_GETFD                    1
@@ -238,6 +239,25 @@ sys_sys_fcntl(int fd, int cmd, long arg)
 		path[length] = '\0';
 		snprintf((char *)arg, _MAXPATHLEN, "%s",
 				sysroot_guest_path(path));
+		return 0;
+	} break;
+
+	case _F_GETSIGSINFO: {
+		struct {
+			int64_t file_start;
+			int32_t info_request;
+			int32_t sig_is_platform;
+		} *info = (void *)arg;
+		if (info->info_request != 1 ) {
+			return _EINVAL;
+		}
+		bool platform;
+		int error = codesign_file_platform(
+				fd, (uint64_t)info->file_start, &platform);
+		if (error != 0) {
+			return error;
+		}
+		info->sig_is_platform = platform;
 		return 0;
 	} break;
 	case _F_CHECK_LV:
