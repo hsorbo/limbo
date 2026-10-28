@@ -56,6 +56,7 @@ static void check_time(void);
 static void check_memory_entries(void);
 static void check_shared_range_entries(void);
 static void check_exception_ports(void);
+static void check_destroy(void);
 static mach_port_t allocate_port(void);
 
 int
@@ -67,7 +68,27 @@ main(void)
 	check_time();
 	check_memory_entries();
 	check_exception_ports();
+	check_destroy();
 	return 0;
+}
+
+static void
+check_destroy(void)
+{
+	mach_port_t port = allocate_port();
+	CHECK(mach_port_insert_right(mach_task_self(), port, port,
+			      MACH_MSG_TYPE_MAKE_SEND)
+			== KERN_SUCCESS);
+	CHECK(mach_port_mod_refs(mach_task_self(), port, MACH_PORT_RIGHT_SEND, 2)
+			== KERN_SUCCESS);
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+	CHECK(mach_port_destroy(mach_task_self(), port) == KERN_SUCCESS);
+#pragma clang diagnostic pop
+	mach_port_type_t type;
+	CHECK(mach_port_type(mach_task_self(), port, &type)
+			== KERN_INVALID_NAME);
 }
 
 static void
