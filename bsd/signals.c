@@ -35,10 +35,12 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <sys/random.h>
 #include <unistd.h>
 
 #include "bsd/handler.h"
+#include "bsd/kevent.h"
 #include "bsd/signals.h"
 #include "bsd/signo.h"
 #include "bsd/xnu-errno.h"
@@ -198,11 +200,17 @@ static uint64_t token_key;
 static _Atomic uint32_t process_pending;
 static siginfo_t process_info[DARWIN_NSIG];
 
+static uint32_t watch_counts[DARWIN_NSIG];
+static _Atomic int64_t sent_counts[DARWIN_NSIG];
+static int relay_fd = -1;
+
 static __thread uint32_t thread_pending;
 static __thread siginfo_t signal_info[DARWIN_NSIG];
 static __thread struct darwin_stack guest_altstack = {.ss_flags = _SS_DISABLE};
 
 static void install_host_action(int sig);
+static bool default_ignores(int sig);
+static void *relay_main(void *arg);
 static bool deliver(ucontext_t *uc, int sig, const siginfo_t *info);
 static void build_frame(struct darwin_sigframe *frame, const ucontext_t *uc,
 		int sig, const siginfo_t *info, bool onstack);
@@ -285,9 +293,14 @@ install_host_action(int sig)
 	}
 
 	const struct action *action = &actions[sig];
+
+	bool watched = watch_counts[sig] != 0
+			&& (action->handler == _SIG_IGN
+					|| (action->handler == _SIG_DFL
+							&& default_ignores(sig)));
 	struct sigaction act;
 	memset(&act, 0, sizeof(act));
-	if (action->handler > _SIG_HOLD) {
+	if (action->handler > _SIG_HOLD || watched) {
 		act.sa_sigaction = syscall_signal_handler;
 		act.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTORER;
 		act.sa_restorer = limbo_rt_sigreturn;
@@ -317,6 +330,66 @@ install_host_action(int sig)
 	sigaction(host, &act, NULL);
 }
 
+static bool
+default_ignores(int sig)
+{
+	switch (sig) {
+	case 16:
+	case 19:
+	case 20:
+	case 23:
+	case 28:
+	case 29:
+		return true;
+	default:
+		return false;
+	}
+}
+
+void
+signals_watch(int sig, bool watch)
+{
+	if (sig <= 0 || sig >= DARWIN_NSIG) {
+		return;
+	}
+	pthread_mutex_lock(&actions_lock);
+	if (watch) {
+		watch_counts[sig]++;
+	} else if (watch_counts[sig] != 0) {
+		watch_counts[sig]--;
+	}
+	if (watch && relay_fd == -1) {
+		relay_fd = eventfd(0, EFD_CLOEXEC);
+		sigset_t all, old;
+		sigfillset(&all);
+		pthread_sigmask(SIG_SETMASK, &all, &old);
+		pthread_t thread;
+		pthread_create(&thread, NULL, relay_main, NULL);
+		pthread_detach(thread);
+		pthread_sigmask(SIG_SETMASK, &old, NULL);
+	}
+	install_host_action(sig);
+	pthread_mutex_unlock(&actions_lock);
+}
+
+static void *
+relay_main(void *arg)
+{
+	for (;;) {
+		eventfd_t value;
+		if (eventfd_read(relay_fd, &value) != 0) {
+			continue;
+		}
+		for (int sig = 1; sig < DARWIN_NSIG; sig++) {
+			int64_t count = atomic_exchange(&sent_counts[sig], 0);
+			if (count != 0) {
+				kevent_signal(sig, count);
+			}
+		}
+	}
+	return NULL;
+}
+
 void
 signals_handle(int sig, siginfo_t *info, ucontext_t *uc,
 		enum signal_context context)
@@ -324,6 +397,10 @@ signals_handle(int sig, siginfo_t *info, ucontext_t *uc,
 	int darwin = signo_from_linux(sig);
 	if (darwin <= 0 || darwin >= DARWIN_NSIG) {
 		return;
+	}
+	if (watch_counts[darwin] != 0 && relay_fd != -1) {
+		atomic_fetch_add(&sent_counts[darwin], 1);
+		eventfd_write(relay_fd, 1);
 	}
 	const struct action *action = &actions[darwin];
 	bool caught = action->handler > _SIG_HOLD;
@@ -769,6 +846,11 @@ sys_sigpending(void *osv)
 
 void
 signals_fork_child(void)
+{
+}
+
+void
+signals_watch(int sig, bool watch)
 {
 }
 

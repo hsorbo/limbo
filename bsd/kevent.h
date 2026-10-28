@@ -52,3 +52,4 @@ void kevent_unbind(struct kqueue *kq, bool manager,
 uint64_t kevent_kqid(struct kqueue *kq);
 void kevent_close(int fd);
 void kevent_machport_arrival(mach_port_name_t name);
+void kevent_signal(int sig, int64_t count);

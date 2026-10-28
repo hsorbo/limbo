@@ -47,3 +47,4 @@ void signals_handle(int sig, siginfo_t *info, ucontext_t *uc,
 void signals_trap_exit(ucontext_t *uc);
 void signals_fork_child(void);
 int signals_mask(int how, const uint32_t *set, uint32_t *oset);
+void signals_watch(int sig, bool watch);
