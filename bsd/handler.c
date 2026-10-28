@@ -1454,7 +1454,13 @@ sys_getrusage(int who, void *rusage)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "getrusage(%p, %p)\n", (void *)who, (void *)rusage);
 #endif
-	unimplemented();
+	struct rusage usage;
+	if (getrusage(who, &usage) == -1) {
+		return err_map(errno);
+	}
+	usage.ru_maxrss *= 1024;
+	memcpy(rusage, &usage, sizeof(usage));
+	return 0;
 }
 
 int
