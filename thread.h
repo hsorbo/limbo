@@ -77,6 +77,8 @@ struct thread {
 
 	void *stopped_context;
 	void *trap_context;
+
+	void *parked_context;
 };
 
 struct thread *thread_current(void);

@@ -37,8 +37,10 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 #include "osfmk/ipc.h"
@@ -159,6 +161,7 @@ thread_main(void *arg)
 static void
 thread_destroy(struct thread *thread)
 {
+	free(thread->parked_context);
 	if (thread->stack_size != 0) {
 		munmap(thread->stack, thread->stack_size);
 	}
@@ -214,7 +217,15 @@ thread_enter(const struct thread_state *state)
 void
 thread_block(void)
 {
-	siglongjmp(current->kernel, 1);
+	struct thread *thread = current;
+	if (thread->trap_context != NULL) {
+		if (thread->parked_context == NULL) {
+			thread->parked_context = malloc(sizeof(ucontext_t));
+		}
+		memcpy(thread->parked_context, thread->trap_context,
+				sizeof(ucontext_t));
+	}
+	siglongjmp(thread->kernel, 1);
 }
 
 void
