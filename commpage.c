@@ -139,9 +139,13 @@ static const uint8_t commpage_snapshot[] = {
 	0x4e, 0xe5, 0xe7, 0xf4, 0xb2, 0x00, 0x00, 0x00,
 };
 
-#define COMM_PAGE_CNTVCT_TIMEBASE 1
-#define COMM_PAGE_TIMEBASE_TYPE   0x90
-#define COMM_PAGE_TIMEBASE_OFFSET 0xa8
+#define COMM_PAGE_CNTVCT_TIMEBASE      1
+#define COMM_PAGE_TIMEBASE_TYPE        0x90
+#define COMM_PAGE_BOOTTIME_USEC        0xa0
+#define COMM_PAGE_TIMEBASE_OFFSET      0xa8
+#define COMM_PAGE_APPROX_TIME_SUPPORTED 0xc8
+#define COMM_PAGE_NEWTIMEOFDAY_TICK    0x120
+#define COMM_PAGE_APRR_SUPPORT         0x10c
 
 static const uintptr_t _COMM_PAGE_RO_ADDRESS = 0xfffff4000ULL;
 static const uint8_t host_cpu_count = 14;
@@ -171,6 +175,19 @@ commpage_mmap(void)
 	memcpy(commpage, commpage_snapshot, sizeof(commpage_snapshot));
 	commpage[COMM_PAGE_TIMEBASE_TYPE] = COMM_PAGE_CNTVCT_TIMEBASE;
 	*(uint64_t *)(commpage + COMM_PAGE_TIMEBASE_OFFSET) = 0;
+
+	commpage[COMM_PAGE_APPROX_TIME_SUPPORTED] = 0;
+
+	commpage[COMM_PAGE_APRR_SUPPORT] = 0;
+	*(uint64_t *)(commpage + COMM_PAGE_NEWTIMEOFDAY_TICK) = 0;
+	struct timespec now;
+	clock_gettime(CLOCK_REALTIME, &now);
+	uint64_t uptime_ns = commpage_absolute_to_nanoseconds(
+			commpage_absolute_time());
+	*(uint64_t *)(commpage + COMM_PAGE_BOOTTIME_USEC)
+			= ((uint64_t)now.tv_sec * 1000000000 + now.tv_nsec
+					  - uptime_ns)
+			/ 1000;
 
 	return 0;
 }
