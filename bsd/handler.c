@@ -77,6 +77,8 @@
 #include <unistd.h>
 
 #include "commpage.h"
+#include "persona.h"
+#include "persona.h"
 #include "signals.h"
 #include "tty.h"
 #include "fs/at.h"
@@ -4468,7 +4470,7 @@ sys_persona(uint32_t operation, uint32_t flags, void *info, void *id,
 			(void *)flags, (void *)info, (void *)id, (void *)idlen,
 			(void *)path);
 #endif
-	return _ESRCH;
+	return persona_syscall(operation, flags, info, id, idlen, path);
 }
 
 uint64_t
