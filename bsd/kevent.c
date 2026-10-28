@@ -49,6 +49,7 @@
 #include "kevent.h"
 #include "osfmk/ipc.h"
 #include "signals.h"
+#include "thread.h"
 #include "workq.h"
 #include "xnu-errno.h"
 
@@ -99,6 +100,7 @@
 #define NOTE_WL_SYNC_IPC       0x80000000
 #define NOTE_WL_COMMANDS_MASK  0x8000000f
 #define NOTE_WL_END_OWNERSHIP  0x00000020
+#define NOTE_WL_DISCOVER_OWNER 0x00000080
 #define NOTE_WL_IGNORE_ESTALE  0x00000100
 
 #define EV_EXTIDX_WL_ADDR  1
@@ -163,7 +165,9 @@ struct kqueue {
 	struct knote *knotes;
 	bool bound[2];
 	bool requested[2];
-	bool owned;
+
+	struct thread *owner;
+	struct thread *servicer;
 };
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -203,7 +207,10 @@ static struct knote *timer_earliest(void);
 static struct kqueue *kqueue_next(struct kqueue *kq);
 static void timer_fire(struct knote *kn);
 static int workloop_touch(struct knote *kn, const struct kevent_qos_s *change);
-static bool workloop_state_matches(const struct kevent_qos_s *change);
+static bool workloop_state_matches(
+		const struct kevent_qos_s *change, uint64_t *state);
+static int workloop_update_owner(struct kqueue *kq,
+		const struct kevent_qos_s *change, bool stale, uint64_t state);
 static void workloop_sync_wait(struct knote *kn);
 static void kqueue_request(struct kqueue *kq, bool manager);
 static bool kqueue_deliverable(struct kqueue *kq, bool manager, uint32_t *qos);
@@ -493,10 +500,13 @@ kevent_register(struct kqueue *kq, const struct kevent_qos_s *change)
 	struct knote *kn = knote_find(kq, change);
 
 	if (change->filter == EVFILT_WORKLOOP) {
-		if (change->fflags & NOTE_WL_END_OWNERSHIP) {
-			kq->owned = false;
+		uint64_t state = 0;
+		bool stale = !workloop_state_matches(change, &state);
+		int error = workloop_update_owner(kq, change, stale, state);
+		if (error != 0) {
+			return error;
 		}
-		if (!workloop_state_matches(change)) {
+		if (stale) {
 			return (change->fflags & NOTE_WL_IGNORE_ESTALE)
 					? 0
 					: _ESTALE;
@@ -505,7 +515,11 @@ kevent_register(struct kqueue *kq, const struct kevent_qos_s *change)
 
 	if (change->flags & EV_DELETE) {
 		if (kn == NULL) {
-			return _ENOENT;
+
+			return change->filter == EVFILT_WORKLOOP
+							&& (change->flags & EV_ADD)
+					? 0
+					: _ENOENT;
 		}
 		if (change->filter == EVFILT_WORKLOOP
 				&& (change->fflags & NOTE_WL_COMMANDS_MASK)
@@ -816,7 +830,6 @@ workloop_touch(struct knote *kn, const struct kevent_qos_s *change)
 	case NOTE_WL_SYNC_WAIT:
 		return 0;
 	case NOTE_WL_SYNC_WAKE:
-		kn->kq->owned = true;
 		kn->woken = true;
 		pthread_cond_broadcast(&sync_wakeup);
 		return 0;
@@ -828,17 +841,45 @@ workloop_touch(struct knote *kn, const struct kevent_qos_s *change)
 }
 
 static bool
-workloop_state_matches(const struct kevent_qos_s *change)
+workloop_state_matches(const struct kevent_qos_s *change, uint64_t *state)
 {
-	uint64_t mask = change->ext[EV_EXTIDX_WL_MASK];
-	if (mask == 0) {
+	if (change->ext[EV_EXTIDX_WL_ADDR] == 0) {
 		return true;
 	}
-
-	uint64_t current = __atomic_load_n(
-			(uint64_t *)change->ext[EV_EXTIDX_WL_ADDR],
+	*state = __atomic_load_n((uint64_t *)change->ext[EV_EXTIDX_WL_ADDR],
 			__ATOMIC_ACQUIRE);
-	return (current & mask) == (change->ext[EV_EXTIDX_WL_VALUE] & mask);
+	uint64_t mask = change->ext[EV_EXTIDX_WL_MASK];
+	return (*state & mask) == (change->ext[EV_EXTIDX_WL_VALUE] & mask);
+}
+
+static int
+workloop_update_owner(struct kqueue *kq, const struct kevent_qos_s *change,
+		bool stale, uint64_t state)
+{
+	if ((change->fflags & NOTE_WL_COMMANDS_MASK) == NOTE_WL_SYNC_IPC) {
+		return 0;
+	}
+	struct thread *owner = kq->owner;
+	if (!stale && (change->fflags & NOTE_WL_DISCOVER_OWNER)) {
+
+		mach_port_name_t name = (mach_port_name_t)state & ~0x3u;
+		if (name != MACH_PORT_NULL) {
+			owner = ipc_kobject_lookup(
+					name | 0x3, IPC_KOBJECT_THREAD);
+			if (owner == NULL) {
+				return _EOWNERDEAD;
+			}
+		}
+	}
+	if ((change->fflags & NOTE_WL_END_OWNERSHIP)
+			&& owner == thread_current()) {
+		owner = NULL;
+	}
+	if (owner != NULL && owner == kq->servicer) {
+		owner = NULL;
+	}
+	kq->owner = owner;
+	return 0;
 }
 
 static void
@@ -864,7 +905,7 @@ kqueue_request(struct kqueue *kq, bool manager)
 	}
 
 	uint32_t qos;
-	if (kq->bound[manager] || kq->requested[manager] || kq->owned
+	if (kq->bound[manager] || kq->requested[manager] || kq->owner != NULL
 			|| !kqueue_deliverable(kq, manager, &qos)) {
 		return;
 	}
@@ -896,6 +937,10 @@ kqueue_deliverable(struct kqueue *kq, bool manager, uint32_t *qos)
 static bool
 knote_deliverable(struct knote *kn, bool manager)
 {
+
+	if (kn->kev.filter == EVFILT_WORKLOOP && kn->kq->owner != NULL) {
+		return false;
+	}
 	return !kn->disabled && kn->manager == manager && knote_active(kn);
 }
 
@@ -1049,6 +1094,12 @@ kevent_bind(struct kqueue *kq, bool manager, struct kevent_qos_s *events,
 #endif
 	kq->requested[manager] = false;
 	kq->bound[manager] = true;
+	if (kq->kind == KQUEUE_WORKLOOP && !manager) {
+		kq->servicer = thread_current();
+		if (kq->owner == kq->servicer) {
+			kq->owner = NULL;
+		}
+	}
 	int count = kqueue_collect(
 			kq, manager, events, max_events, &data, &data_size);
 	pthread_mutex_unlock(&lock);
@@ -1099,6 +1150,12 @@ machport_receive(struct kevent_qos_s *event, uint8_t **data, size_t *data_size)
 static void
 knote_delivered(struct knote *kn)
 {
+
+	if (kn->kev.filter == EVFILT_WORKLOOP) {
+		kn->active = false;
+		return;
+	}
+
 	if (kn->kev.flags & EV_ONESHOT) {
 		knote_detach(kn);
 		return;
@@ -1130,6 +1187,9 @@ kevent_unbind(struct kqueue *kq, bool manager,
 		kevent_register(kq, &changes[i]);
 	}
 	kq->bound[manager] = false;
+	if (!manager && kq->servicer == thread_current()) {
+		kq->servicer = NULL;
+	}
 	kqueue_request(kq, false);
 	kqueue_request(kq, true);
 	pthread_mutex_unlock(&lock);
