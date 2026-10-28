@@ -626,6 +626,16 @@ dispatch_syscall(mcontext_t *mc)
 }
 #endif
 
+/* The guest's call chain into the system call the thread is in, which
+ * names the code that wanted what limbo lacks */
+void
+syscall_print_trap_chain(void)
+{
+	if (trap_context != NULL) {
+		syscall_print_guest_chain(&trap_context->uc_mcontext);
+	}
+}
+
 static bool
 returns_raw_result(unsigned long syscall, uint64_t arg1)
 {
