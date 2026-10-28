@@ -41,6 +41,7 @@
 #include "commpage.h"
 #include "fs/device.h"
 #include "handler.h"
+#include "kevent.h"
 #include "osfmk/task.h"
 #include "process.h"
 #include "sysroot.h"
@@ -67,6 +68,9 @@
 #define PROC_PIDUNIQIDENTIFIERINFO 17
 #define PROC_PIDT_BSDINFOWITHUNIQID 18
 #define PROC_PIDCOALITIONINFO      20
+#define PROC_PIDLISTDYNKQUEUES     27
+
+#define PROC_PIDDYNKQUEUES_MAX 1024
 
 #define SRUN           2
 #define PROC_FLAG_LP64 0x10
@@ -310,6 +314,25 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 		}
 		memcpy(buffer, info, sizeof(info));
 		return sizeof(info);
+	}
+
+	case PROC_PIDLISTDYNKQUEUES: {
+		if (pid != getpid()) {
+			unimplemented();
+		}
+		if (buffer == NULL && buffersize != 0) {
+			return _EINVAL;
+		}
+		size_t capacity = (buffersize > 0)
+				? (size_t)buffersize / sizeof(uint64_t)
+				: 0;
+		if (capacity > PROC_PIDDYNKQUEUES_MAX) {
+			capacity = PROC_PIDDYNKQUEUES_MAX;
+		}
+		size_t count = kevent_dynamic_ids(buffer, capacity);
+		return (int)((count < PROC_PIDDYNKQUEUES_MAX)
+						? count
+						: PROC_PIDDYNKQUEUES_MAX);
 	}
 	default:
 		unimplemented();
