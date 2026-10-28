@@ -1584,8 +1584,15 @@ sys_bind(int s, void *name, void *namelen)
 #endif
 	const struct xnu_sockaddr_un *address = name;
 	socklen_t length = (socklen_t)(uintptr_t)namelen;
-	if (length < 2 || address->sun_family != xnu_PF_UNIX) {
-		unimplemented();
+	if (length < 2) {
+		return _EINVAL;
+	}
+	if (address->sun_family != xnu_PF_UNIX) {
+		struct sockaddr_storage host;
+		socklen_t host_length
+				= translate_to_host_sockaddr(name, length, &host);
+		return errno_map(
+				bind(s, (struct sockaddr *)&host, host_length));
 	}
 	char path[sizeof(address->sun_path) + 1] = {0};
 	size_t path_length = length - 2;
