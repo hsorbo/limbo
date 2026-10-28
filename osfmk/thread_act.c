@@ -29,6 +29,7 @@
 #include <stdio.h>
 
 #include "ipc.h"
+#include "commpage.h"
 #include "thread.h"
 
 kern_return_t
@@ -321,7 +322,49 @@ thread_policy_get(thread_inspect_t thread, thread_policy_flavor_t flavor,
 			(void *)thread, (void *)flavor, (void *)policy_info,
 			(void *)policy_infoCnt, (void *)get_default);
 #endif
-	unimplemented();
+
+	integer_t *info = policy_info;
+	switch (flavor) {
+	case THREAD_EXTENDED_POLICY:
+
+		if (*policy_infoCnt >= THREAD_EXTENDED_POLICY_COUNT) {
+			((thread_extended_policy_t)info)->timeshare = TRUE;
+			*policy_infoCnt = THREAD_EXTENDED_POLICY_COUNT;
+		}
+		return KERN_SUCCESS;
+	case THREAD_TIME_CONSTRAINT_POLICY: {
+		if (*policy_infoCnt < THREAD_TIME_CONSTRAINT_POLICY_COUNT) {
+			return KERN_INVALID_ARGUMENT;
+		}
+
+		uint32_t numer, denom;
+		commpage_timebase(&numer, &denom);
+		uint64_t quantum = 10000000ull * denom / numer;
+		thread_time_constraint_policy_t policy = (void *)info;
+		policy->period = 0;
+		policy->computation = (uint32_t)(quantum / 2);
+		policy->constraint = (uint32_t)quantum;
+		policy->preemptible = TRUE;
+		*policy_infoCnt = THREAD_TIME_CONSTRAINT_POLICY_COUNT;
+		*get_default = TRUE;
+		return KERN_SUCCESS;
+	}
+	case THREAD_PRECEDENCE_POLICY:
+	case THREAD_AFFINITY_POLICY:
+	case THREAD_BACKGROUND_POLICY:
+	case THREAD_LATENCY_QOS_POLICY:
+	case THREAD_THROUGHPUT_QOS_POLICY:
+
+		if (*policy_infoCnt < 1) {
+			return KERN_INVALID_ARGUMENT;
+		}
+		info[0] = 0;
+		*policy_infoCnt = 1;
+		*get_default = TRUE;
+		return KERN_SUCCESS;
+	default:
+		return KERN_INVALID_ARGUMENT;
+	}
 }
 
 kern_return_t
