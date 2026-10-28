@@ -47,15 +47,24 @@
 #define HOST_CPU_TYPE CPU_TYPE_ARM64
 #define HOST_MACHINE  "arm64"
 #define HOST_MODEL    "Mac17,2"
+#define HOST_KERNEL_VERSION                                                    \
+	"Darwin Kernel Version 27.0.0: Tue Aug 11 21:05:48 PDT 2026; "         \
+	"root:xnu-13432.1.9~1/RELEASE_ARM64_T6041"
 #else
 #define HOST_CPU_TYPE CPU_TYPE_X86_64
 #define HOST_MACHINE  "x86_64"
 #define HOST_MODEL    "MacPro7,1"
+#define HOST_KERNEL_VERSION                                                    \
+	"Darwin Kernel Version 27.0.0: Tue Aug 11 21:02:59 PDT 2026; "         \
+	"root:xnu-13432.1.9~1/RELEASE_X86_64"
 #endif
 
 #define CTL_UNSPEC 0
 #define CTL_KERN   1
+#define CTL_VM     2
 #define CTL_HW     6
+
+#define VM_SWAPUSAGE 5
 
 #define CTL_SYSCTL_NAME     1
 #define CTL_SYSCTL_NAME2OID 3
@@ -157,9 +166,11 @@ struct __darwin_kinfo_proc {
 static int read_hostname(void *old, size_t *oldlenp);
 static int read_boottime(void *old, size_t *oldlenp);
 static int read_bootsessionuuid(void *old, size_t *oldlenp);
+static int read_sandbox_sentinel(void *old, size_t *oldlenp);
 static int read_ncpu(void *old, size_t *oldlenp);
 static int read_memsize(void *old, size_t *oldlenp);
 static int read_cpusubtype(void *old, size_t *oldlenp);
+static int read_swapusage(void *old, size_t *oldlenp);
 
 static const struct sysctl_node nodes[] = {
 		{"kern.ostype", {CTL_KERN, KERN_OSTYPE}, SYSCTL_STRING,
@@ -169,10 +180,7 @@ static const struct sysctl_node nodes[] = {
 		{"kern.osrevision", {CTL_KERN, KERN_OSREV}, SYSCTL_INT,
 				.number = 199506},
 		{"kern.version", {CTL_KERN, KERN_VERSION}, SYSCTL_STRING,
-				.string
-				= "Darwin Kernel Version 27.0.0: Tue Aug 11 "
-				  "21:02:59 PDT 2026; "
-				  "root:xnu-13432.1.9~1/RELEASE_X86_64"},
+				.string = HOST_KERNEL_VERSION},
 		{"kern.argmax", {CTL_KERN, KERN_ARGMAX}, SYSCTL_INT,
 				.number = 1048576},
 
@@ -194,12 +202,12 @@ static const struct sysctl_node nodes[] = {
 		{"kern.usrstack64", {CTL_KERN, KERN_USRSTACK64}, SYSCTL_QUAD,
 				.number = (int64_t)VM_USRSTACK64},
 		{"kern.osversion", {CTL_KERN, KERN_OSVERSION}, SYSCTL_STRING,
-				.string = "26A428"},
+				.string = "26A434"},
 		{"kern.bootargs", {0, 0}, SYSCTL_STRING, .string = ""},
 		{"kern.bootsessionuuid", {0, 0}, SYSCTL_READER,
 				.reader = read_bootsessionuuid},
 		{"kern.osproductversion", {0, 0}, SYSCTL_STRING,
-				.string = "27.0"},
+				.string = "27.0.1"},
 		{"kern.secure_kernel", {0, 0}, SYSCTL_INT, .number = 0},
 
 		{"kern.iossupportversion", {0, 0}, SYSCTL_STRING,
@@ -207,6 +215,19 @@ static const struct sysctl_node nodes[] = {
 
 		{"kern.osvariant_status", {0, 0}, SYSCTL_QUAD,
 				.number = (int64_t)8070732011310449290ULL},
+		{"kern.willshutdown", {0, 0}, SYSCTL_INT, .number = 0},
+
+		{"kern.wq_max_threads", {0, 0}, SYSCTL_INT, .number = 512},
+		{"kern.wq_max_constrained_threads", {0, 0}, SYSCTL_INT,
+				.number = 70},
+
+		{"kern.memorystatus_vm_pressure_level", {0, 0}, SYSCTL_INT,
+				.number = 1},
+		{"vm.swapusage", {CTL_VM, VM_SWAPUSAGE}, SYSCTL_READER,
+				.reader = read_swapusage},
+
+		{"sysctl.proc_cputype", {0, 0}, SYSCTL_INT,
+				.number = HOST_CPU_TYPE},
 		{"hw.machine", {CTL_HW, HW_MACHINE}, SYSCTL_STRING,
 				.string = HOST_MACHINE},
 		{"hw.model", {CTL_HW, HW_MODEL}, SYSCTL_STRING,
@@ -239,6 +260,8 @@ static const struct sysctl_node nodes[] = {
 		{"hw.cpu64bit_capable", {0, 0}, SYSCTL_INT, .number = 1},
 		{"hw.ephemeral_storage", {0, 0}, SYSCTL_INT, .number = 0},
 
+		{"hw.use_kernelmanagerd", {0, 0}, SYSCTL_INT, .number = 1},
+
 		{"hw.nperflevels", {0, 0}, SYSCTL_INT, .number = 1},
 		{"hw.perflevel0.physicalcpu", {0, 0}, SYSCTL_READER,
 				.reader = read_ncpu},
@@ -260,6 +283,9 @@ static const struct sysctl_node nodes[] = {
 				.string = "Performance"},
 		{"security.mac.lockdown_mode_state", {0, 0}, SYSCTL_INT,
 				.number = 0},
+
+		{"security.mac.sandbox.sentinel", {0, 0}, SYSCTL_READER,
+				.reader = read_sandbox_sentinel},
 };
 
 static int read_kinfo_proc(int32_t pid, void *old, size_t *oldlenp);
@@ -318,6 +344,19 @@ sys_sysctl(int *name, uint32_t namelen, void *old, size_t *oldlenp, void *new,
 	}
 
 	const struct sysctl_node *node = lookup_oid(name, namelen);
+	if (node == NULL && namelen == 3) {
+
+		const struct sysctl_node *parent = lookup_oid(name, 2);
+		if (parent != NULL
+				&& strcmp(parent->name, "sysctl.proc_cputype")
+						== 0) {
+			struct process process;
+			if (process_lookup(name[2], &process) != 0) {
+				return _ESRCH;
+			}
+			node = parent;
+		}
+	}
 	if (node == NULL) {
 #ifdef ENABLE_STRACE
 		fprintf(stderr, ">> Unknown sysctl:");
@@ -418,7 +457,8 @@ oid_format(const int *oid, void *old, size_t *oldlenp)
 			kind = CTLTYPE_OPAQUE;
 			format = "S,timeval";
 		} else if (node->reader == read_hostname
-				|| node->reader == read_bootsessionuuid) {
+				|| node->reader == read_bootsessionuuid
+				|| node->reader == read_sandbox_sentinel) {
 			kind = CTLTYPE_STRING;
 			format = "A";
 		} else if (node->reader == read_memsize) {
@@ -539,6 +579,22 @@ read_bootsessionuuid(void *old, size_t *oldlenp)
 }
 
 static int
+read_sandbox_sentinel(void *old, size_t *oldlenp)
+{
+	char boot[40] = "00000000";
+	FILE *boot_id = fopen("/proc/sys/kernel/random/boot_id", "r");
+	if (boot_id != NULL) {
+		if (fgets(boot, sizeof(boot), boot_id) == NULL) {
+			boot[0] = '\0';
+		}
+		fclose(boot_id);
+	}
+	char sentinel[16];
+	snprintf(sentinel, sizeof(sentinel), ".sb-%.8s", boot);
+	return read_bytes(sentinel, strlen(sentinel) + 1, old, oldlenp);
+}
+
+static int
 read_boottime(void *old, size_t *oldlenp)
 {
 	struct timespec now, uptime;
@@ -573,6 +629,34 @@ read_cpusubtype(void *old, size_t *oldlenp)
 {
 	return read_number(shared_cache_cpu_subtype, sizeof(int32_t), old,
 			oldlenp);
+}
+
+static int
+read_swapusage(void *old, size_t *oldlenp)
+{
+	struct {
+		uint64_t total;
+		uint64_t avail;
+		uint64_t used;
+		uint32_t pagesize;
+		uint32_t encrypted;
+	} usage = {.pagesize = 16384, .encrypted = 1};
+	FILE *meminfo = fopen("/proc/meminfo", "r");
+	if (meminfo != NULL) {
+		char line[128];
+		unsigned long long kilobytes;
+		while (fgets(line, sizeof(line), meminfo) != NULL) {
+			if (sscanf(line, "SwapTotal: %llu kB", &kilobytes) == 1) {
+				usage.total = kilobytes * 1024;
+			} else if (sscanf(line, "SwapFree: %llu kB", &kilobytes)
+					== 1) {
+				usage.avail = kilobytes * 1024;
+			}
+		}
+		fclose(meminfo);
+	}
+	usage.used = usage.total - usage.avail;
+	return read_bytes(&usage, sizeof(usage), old, oldlenp);
 }
 
 static int
