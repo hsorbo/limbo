@@ -31,6 +31,7 @@
 #endif
 
 #include <errno.h>
+#include <fcntl.h>
 #include <mach/mach_types.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -460,6 +461,33 @@ static int
 share_in_place(mach_vm_address_t address, mach_vm_size_t size,
 		vm_prot_t protection)
 {
+	/*
+	 * A range shared in place by an entry made before is the memory that
+	 * entry names, and a second entry of it must name the same memory, not
+	 * a copy of it: coreservicesd makes an entry of its store's segment
+	 * for every client (limbo-19k.96). The mapping's file is the memfd
+	 */
+	mach_vm_address_t start;
+	mach_vm_size_t region_size;
+	vm_prot_t region_prot;
+	bool region_shared;
+	uint64_t file_offset;
+	if (region_find(address, &start, &region_size, &region_prot,
+			    &region_shared, &file_offset)
+			&& region_shared && start <= address
+			&& address + size <= start + region_size
+			&& file_offset + (address - start) == 0) {
+		char path[80];
+		snprintf(path, sizeof(path),
+				"/proc/thread-self/map_files/%llx-%llx",
+				(unsigned long long)start,
+				(unsigned long long)(start + region_size));
+		int same = open(path, O_RDWR | O_CLOEXEC);
+		if (same != -1) {
+			return same;
+		}
+	}
+
 	bool shared;
 	int fd = memfd_create("remap", MFD_CLOEXEC);
 	if (fd == -1 || ftruncate(fd, size) == -1
@@ -641,18 +669,16 @@ mach_make_memory_entry(vm_map_t target_task, memory_object_size_t *size,
 			(void *)parent_handle);
 #endif
 	if (parent_handle != MACH_PORT_NULL
-			|| !(permission
-					& (MAP_MEM_VM_SHARE
-							| MAP_MEM_VM_COPY))) {
+			|| (permission & MAP_MEM_NAMED_CREATE)) {
 		unimplemented();
 	}
 
 	mach_vm_address_t start = offset & ~(mach_vm_address_t)PAGE_MASK;
 	mach_vm_address_t end = (offset + *size + PAGE_MASK) & ~PAGE_MASK;
-	int fd = (permission & MAP_MEM_VM_SHARE)
-			? share_in_place(start, end - start,
-					  region_protection(start))
-			: copy_range(start, end - start);
+	int fd = (permission & MAP_MEM_VM_COPY)
+			? copy_range(start, end - start)
+			: share_in_place(start, end - start,
+					  region_protection(start));
 	if (fd == -1) {
 		return KERN_INVALID_ADDRESS;
 	}
