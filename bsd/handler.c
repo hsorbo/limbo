@@ -3732,7 +3732,7 @@ sys_pid_suspend(int pid)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "pid_suspend(%p)\n", (void *)pid);
 #endif
-	unimplemented();
+	return errno_map(kill(pid, SIGSTOP));
 }
 
 int
@@ -3741,7 +3741,7 @@ sys_pid_resume(int pid)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "pid_resume(%p)\n", (void *)pid);
 #endif
-	unimplemented();
+	return errno_map(kill(pid, SIGCONT));
 }
 
 int
@@ -3751,7 +3751,8 @@ sys_pid_shutdown_sockets(int pid, int level)
 	fprintf(stderr, "pid_shutdown_sockets(%p, %p)\n", (void *)pid,
 			(void *)level);
 #endif
-	unimplemented();
+
+	return 0;
 }
 
 int
