@@ -264,7 +264,8 @@ host_processor_sets(host_priv_t host_priv,
 	fprintf(stderr, "host_processor_sets(%p, %p, %p)\n", (void *)host_priv,
 			(void *)processor_sets, (void *)processor_setsCnt);
 #endif
-	unimplemented();
+
+	return KERN_INVALID_HOST;
 }
 
 kern_return_t
