@@ -42,6 +42,7 @@
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -56,6 +57,7 @@
 
 #define EVFILT_READ     -1
 #define EVFILT_WRITE    -2
+#define EVFILT_PROC     -5
 #define EVFILT_SIGNAL   -6
 #define EVFILT_MACHPORT -8
 #define EVFILT_TIMER    -7
@@ -95,6 +97,8 @@
 #define NOTE_NSECONDS 0x00000004
 #define NOTE_ABSOLUTE 0x00000008
 #define NOTE_MACHTIME 0x00000100
+
+#define NOTE_EXIT 0x80000000
 
 #define NOTE_WL_THREAD_REQUEST 0x00000001
 #define NOTE_WL_SYNC_WAIT      0x00000004
@@ -138,6 +142,14 @@ struct knote {
 	uint32_t sock_reported;
 	uint64_t deadline;
 	uint64_t interval;
+
+	uint32_t proc_fflags;
+	struct proc_watch *watch;
+};
+
+struct proc_watch {
+	struct knote *kn;
+	int pidfd;
 };
 
 #define NOTE_CONNRESET    0x00000001
@@ -213,6 +225,9 @@ static void knote_detach(struct knote *kn);
 static int knote_touch(struct knote *kn, const struct kevent_qos_s *change);
 static void user_touch(struct knote *kn, const struct kevent_qos_s *change);
 static void timer_arm(struct knote *kn);
+static void proc_watch_start(struct knote *kn);
+static void *proc_watch_main(void *arg);
+static void proc_exited(struct knote *kn);
 static uint64_t timer_nanoseconds(uint32_t fflags, int64_t data);
 static uint64_t now_monotonic(void);
 static uint64_t now_realtime(void);
@@ -438,6 +453,21 @@ sys_kevent_id(uint64_t id, void *changelist, int nchanges, void *eventlist,
 	return result;
 }
 
+size_t
+kevent_dynamic_ids(uint64_t *ids, size_t capacity)
+{
+	size_t count = 0;
+	pthread_mutex_lock(&lock);
+	for (struct kqueue *kq = workloops; kq != NULL; kq = kq->next) {
+		if (count < capacity) {
+			ids[count] = kq->id;
+		}
+		count++;
+	}
+	pthread_mutex_unlock(&lock);
+	return count;
+}
+
 static struct kqueue *
 workloop_lookup(uint64_t id, unsigned int flags)
 {
@@ -654,6 +684,9 @@ knote_detach(struct knote *kn)
 	if (kn->kev.filter == EVFILT_SIGNAL) {
 		signals_watch((int)kn->kev.ident, false);
 	}
+	if (kn->watch != NULL) {
+		kn->watch->kn = NULL;
+	}
 	if (kn->waiting) {
 		kn->deleted = true;
 		return;
@@ -681,6 +714,12 @@ knote_touch(struct knote *kn, const struct kevent_qos_s *change)
 		return 0;
 	case EVFILT_WORKLOOP:
 		return workloop_touch(kn, change);
+	case EVFILT_PROC:
+		kn->proc_fflags = change->fflags;
+		if (kn->watch == NULL) {
+			proc_watch_start(kn);
+		}
+		return 0;
 	case EVFILT_SOCK:
 		kn->sock_interest = change->fflags;
 		memcpy(kn->kev.ext, change->ext, sizeof(kn->kev.ext));
@@ -711,6 +750,64 @@ user_touch(struct knote *kn, const struct kevent_qos_s *change)
 	if (change->fflags & NOTE_TRIGGER) {
 		kn->active = true;
 	}
+}
+
+/* Watch the process the knote names, which comes from another task */
+static void
+proc_watch_start(struct knote *kn)
+{
+	int pidfd = syscall(SYS_pidfd_open, (pid_t)kn->kev.ident, 0);
+	if (pidfd == -1) {
+		proc_exited(kn);
+		return;
+	}
+	struct proc_watch *watch = calloc(1, sizeof(*watch));
+	watch->kn = kn;
+	watch->pidfd = pidfd;
+	kn->watch = watch;
+	pthread_t thread;
+	if (pthread_create(&thread, NULL, proc_watch_main, watch) != 0) {
+		kn->watch = NULL;
+		close(pidfd);
+		free(watch);
+		return;
+	}
+	pthread_detach(thread);
+}
+
+static void *
+proc_watch_main(void *arg)
+{
+	struct proc_watch *watch = arg;
+	struct pollfd pfd = {.fd = watch->pidfd, .events = POLLIN};
+	while (poll(&pfd, 1, -1) == -1 && errno == EINTR) {
+	}
+	pthread_mutex_lock(&lock);
+	if (watch->kn != NULL) {
+		watch->kn->watch = NULL;
+		proc_exited(watch->kn);
+	}
+	pthread_mutex_unlock(&lock);
+	close(watch->pidfd);
+	free(watch);
+	return NULL;
+}
+
+/*
+ * The process exited: the knote fires with NOTE_EXIT, if it asked for it.
+ * Its status is the parent's to know, so it reads as 0
+ */
+static void
+proc_exited(struct knote *kn)
+{
+	if (!(kn->proc_fflags & NOTE_EXIT)) {
+		return;
+	}
+	kn->kev.fflags = NOTE_EXIT;
+	kn->kev.data = 0;
+	kn->kev.flags |= EV_EOF | EV_ONESHOT;
+	kn->active = true;
+	kqueue_request(kn->kq, kn->manager);
 }
 
 static void

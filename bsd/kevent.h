@@ -50,6 +50,7 @@ int kevent_bind(struct kqueue *kq, bool manager, struct kevent_qos_s *events,
 void kevent_unbind(struct kqueue *kq, bool manager,
 		const struct kevent_qos_s *changes, int nchanges);
 uint64_t kevent_kqid(struct kqueue *kq);
+size_t kevent_dynamic_ids(uint64_t *ids, size_t capacity);
 void kevent_close(int fd);
 void kevent_machport_arrival(mach_port_name_t name);
 void kevent_signal(int sig, int64_t count);
