@@ -1020,6 +1020,19 @@ sys_setpgid(int pid, int pgid)
 	return errno_map(setpgid(pid, pgid));
 }
 
+struct __darwin_user64_timeval {
+	int64_t tv_sec;
+	int32_t tv_usec;
+};
+
+struct __darwin_user64_itimerval {
+	struct __darwin_user64_timeval it_interval;
+	struct __darwin_user64_timeval it_value;
+};
+
+static void itimerval_from_linux(const struct itimerval *from,
+		struct __darwin_user64_itimerval *to);
+
 int
 sys_setitimer(uint32_t which, void *itv, void *oitv)
 {
@@ -1027,7 +1040,25 @@ sys_setitimer(uint32_t which, void *itv, void *oitv)
 	fprintf(stderr, "setitimer(%p, %p, %p)\n", (void *)which, (void *)itv,
 			(void *)oitv);
 #endif
-	unimplemented();
+	if (which > ITIMER_PROF) {
+		return _EINVAL;
+	}
+	struct itimerval value = {0}, old;
+	if (itv != NULL) {
+		const struct __darwin_user64_itimerval *darwin = itv;
+		value.it_interval.tv_sec = darwin->it_interval.tv_sec;
+		value.it_interval.tv_usec = darwin->it_interval.tv_usec;
+		value.it_value.tv_sec = darwin->it_value.tv_sec;
+		value.it_value.tv_usec = darwin->it_value.tv_usec;
+	}
+
+	if (setitimer(which, &value, &old) == -1) {
+		return err_map(errno);
+	}
+	if (oitv != NULL) {
+		itimerval_from_linux(&old, oitv);
+	}
+	return 0;
 }
 
 int
@@ -1046,7 +1077,26 @@ sys_getitimer(uint32_t which, void *itv)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "getitimer(%p, %p)\n", (void *)which, (void *)itv);
 #endif
-	unimplemented();
+	if (which > ITIMER_PROF) {
+		return _EINVAL;
+	}
+	struct itimerval value;
+	if (getitimer(which, &value) == -1) {
+		return err_map(errno);
+	}
+	itimerval_from_linux(&value, itv);
+	return 0;
+}
+
+static void
+itimerval_from_linux(const struct itimerval *from,
+		struct __darwin_user64_itimerval *to)
+{
+	memset(to, 0, sizeof(*to));
+	to->it_interval.tv_sec = from->it_interval.tv_sec;
+	to->it_interval.tv_usec = from->it_interval.tv_usec;
+	to->it_value.tv_sec = from->it_value.tv_sec;
+	to->it_value.tv_usec = from->it_value.tv_usec;
 }
 
 int
@@ -1424,11 +1474,6 @@ sys_sigsuspend(uint32_t mask)
 	sigdelset(&set, SIGSYS);
 	return errno_map(sigsuspend(&set));
 }
-
-struct __darwin_user64_timeval {
-	int64_t tv_sec;
-	int32_t tv_usec;
-};
 
 int
 sys_gettimeofday(void *tp, void *tzp, uint64_t *mach_absolute_time)
