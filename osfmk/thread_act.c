@@ -25,6 +25,10 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <mach/mach.h>
 #include <stdio.h>
 #include <string.h>
@@ -46,6 +50,15 @@ struct darwin_arm_thread_state64 {
 };
 #define DARWIN_ARM_THREAD_STATE64_COUNT                                        \
 	(sizeof(struct darwin_arm_thread_state64) / sizeof(uint32_t))
+
+#define DARWIN_X86_THREAD_STATE64 4
+struct darwin_x86_thread_state64 {
+	uint64_t rax, rbx, rcx, rdx, rdi, rsi, rbp, rsp;
+	uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+	uint64_t rip, rflags, cs, fs, gs;
+};
+#define DARWIN_X86_THREAD_STATE64_COUNT                                        \
+	(sizeof(struct darwin_x86_thread_state64) / sizeof(uint32_t))
 
 kern_return_t
 thread_terminate(mach_port_t target_act)
@@ -89,9 +102,6 @@ thread_get_state(thread_read_t target_act, thread_state_flavor_t flavor,
 			(void *)target_act, (void *)flavor, (void *)old_state,
 			(void *)old_stateCnt);
 #endif
-#ifdef __x86_64__
-	unimplemented();
-#else
 
 	struct thread *thread
 			= ipc_kobject_lookup(target_act, IPC_KOBJECT_THREAD);
@@ -104,6 +114,41 @@ thread_get_state(thread_read_t target_act, thread_state_flavor_t flavor,
 	}
 	const mcontext_t *mc = &context->uc_mcontext;
 	switch (flavor) {
+#ifdef __x86_64__
+	case DARWIN_X86_THREAD_STATE64: {
+		if (*old_stateCnt < DARWIN_X86_THREAD_STATE64_COUNT) {
+			return KERN_INVALID_ARGUMENT;
+		}
+		const greg_t *gregs = mc->gregs;
+		uint64_t segments = (uint64_t)gregs[REG_CSGSFS];
+		struct darwin_x86_thread_state64 *state = (void *)old_state;
+		*state = (struct darwin_x86_thread_state64){
+				.rax = gregs[REG_RAX],
+				.rbx = gregs[REG_RBX],
+				.rcx = gregs[REG_RCX],
+				.rdx = gregs[REG_RDX],
+				.rdi = gregs[REG_RDI],
+				.rsi = gregs[REG_RSI],
+				.rbp = gregs[REG_RBP],
+				.rsp = gregs[REG_RSP],
+				.r8 = gregs[REG_R8],
+				.r9 = gregs[REG_R9],
+				.r10 = gregs[REG_R10],
+				.r11 = gregs[REG_R11],
+				.r12 = gregs[REG_R12],
+				.r13 = gregs[REG_R13],
+				.r14 = gregs[REG_R14],
+				.r15 = gregs[REG_R15],
+				.rip = gregs[REG_RIP],
+				.rflags = gregs[REG_EFL],
+				.cs = segments & 0xffff,
+				.gs = (segments >> 16) & 0xffff,
+				.fs = (segments >> 32) & 0xffff,
+		};
+		*old_stateCnt = DARWIN_X86_THREAD_STATE64_COUNT;
+		return KERN_SUCCESS;
+	}
+#else
 	case DARWIN_ARM_THREAD_STATE64: {
 		if (*old_stateCnt < DARWIN_ARM_THREAD_STATE64_COUNT) {
 			return KERN_INVALID_ARGUMENT;
@@ -121,10 +166,10 @@ thread_get_state(thread_read_t target_act, thread_state_flavor_t flavor,
 		*old_stateCnt = DARWIN_ARM_THREAD_STATE64_COUNT;
 		return KERN_SUCCESS;
 	}
+#endif
 	default:
 		return KERN_INVALID_ARGUMENT;
 	}
-#endif
 }
 
 kern_return_t
