@@ -58,6 +58,7 @@
 #include "mdep/handler.h"
 #include "osfmk/handler.h"
 #include "syscall.h"
+#include "thread.h"
 
 /* Never allow system calls from outside our binary region */
 static const uint8_t selector = SYSCALL_DISPATCH_FILTER_BLOCK;
@@ -103,6 +104,7 @@ static uintptr_t limbo_text_start, limbo_text_end;
 static uintptr_t vdso_start, vdso_end;
 static void find_limbo_text(void);
 static bool in_limbo(uint64_t pc);
+static void handle_suspend(int sig, siginfo_t *info, void *ucontext);
 #endif
 
 #ifndef __x86_64__
@@ -148,6 +150,12 @@ syscall_handler_install(void)
 	}
 	find_limbo_text();
 	signals_init();
+
+	struct sigaction suspend = {0};
+	suspend.sa_sigaction = handle_suspend;
+	suspend.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART | SA_RESTORER;
+	suspend.sa_restorer = limbo_rt_sigreturn;
+	sigaction(thread_suspend_signal(), &suspend, NULL);
 #endif
 	return 0;
 }
@@ -200,6 +208,17 @@ syscall_signal_handler(int sig, siginfo_t *info, void *ucontext)
 	signals_handle(sig, info, uc,
 			in_limbo(uc->uc_mcontext.pc) ? SIGNAL_IN_LIMBO
 						     : SIGNAL_IN_GUEST);
+	asm volatile("msr tpidr_el0, %0" ::"r"(entry_pointer));
+}
+
+__attribute__((no_stack_protector)) static void
+handle_suspend(int sig, siginfo_t *info, void *ucontext)
+{
+	ucontext_t *uc = ucontext;
+	uint64_t entry_pointer = enter_limbo();
+	if (!in_limbo(uc->uc_mcontext.pc)) {
+		thread_stop_if_suspended(uc);
+	}
 	asm volatile("msr tpidr_el0, %0" ::"r"(entry_pointer));
 }
 
@@ -343,10 +362,15 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 	guest_thread_pointer = entry_pointer;
 	ucontext_t *outer_context = trap_context;
 	trap_context = ucontext;
+	struct thread *self = thread_current();
+	void *outer_trap = self->trap_context;
+	self->trap_context = ucontext;
 
 	dispatch_syscall(mc);
 	signals_trap_exit(ucontext);
+	thread_stop_if_suspended(ucontext);
 
+	self->trap_context = outer_trap;
 	trap_context = outer_context;
 	uint64_t resume_pointer = guest_thread_pointer;
 	guest_thread_pointer = outer_pointer;

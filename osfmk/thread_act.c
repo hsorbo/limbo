@@ -27,10 +27,25 @@
 
 #include <mach/mach.h>
 #include <stdio.h>
+#include <string.h>
+#include <ucontext.h>
 
 #include "ipc.h"
 #include "commpage.h"
 #include "thread.h"
+
+#define DARWIN_ARM_THREAD_STATE64 6
+struct darwin_arm_thread_state64 {
+	uint64_t x[29];
+	uint64_t fp;
+	uint64_t lr;
+	uint64_t sp;
+	uint64_t pc;
+	uint32_t cpsr;
+	uint32_t flags;
+};
+#define DARWIN_ARM_THREAD_STATE64_COUNT                                        \
+	(sizeof(struct darwin_arm_thread_state64) / sizeof(uint32_t))
 
 kern_return_t
 thread_terminate(mach_port_t target_act)
@@ -74,7 +89,42 @@ thread_get_state(thread_read_t target_act, thread_state_flavor_t flavor,
 			(void *)target_act, (void *)flavor, (void *)old_state,
 			(void *)old_stateCnt);
 #endif
+#ifdef __x86_64__
 	unimplemented();
+#else
+
+	struct thread *thread
+			= ipc_kobject_lookup(target_act, IPC_KOBJECT_THREAD);
+	if (thread == NULL) {
+		return KERN_INVALID_ARGUMENT;
+	}
+	const ucontext_t *context = thread_guest_context(thread);
+	if (context == NULL) {
+		return KERN_FAILURE;
+	}
+	const mcontext_t *mc = &context->uc_mcontext;
+	switch (flavor) {
+	case DARWIN_ARM_THREAD_STATE64: {
+		if (*old_stateCnt < DARWIN_ARM_THREAD_STATE64_COUNT) {
+			return KERN_INVALID_ARGUMENT;
+		}
+		struct darwin_arm_thread_state64 *state = (void *)old_state;
+		memset(state, 0, sizeof(*state));
+		memcpy(state->x, mc->regs, sizeof(state->x));
+		state->fp = mc->regs[29];
+		state->lr = mc->regs[30];
+		state->sp = mc->sp;
+		state->pc = mc->pc;
+		state->cpsr = (uint32_t)mc->pstate;
+
+		state->flags = 0x1;
+		*old_stateCnt = DARWIN_ARM_THREAD_STATE64_COUNT;
+		return KERN_SUCCESS;
+	}
+	default:
+		return KERN_INVALID_ARGUMENT;
+	}
+#endif
 }
 
 kern_return_t
@@ -101,7 +151,7 @@ thread_suspend(thread_read_t target_act)
 		return KERN_INVALID_ARGUMENT;
 	}
 	if (thread != thread_current()) {
-		unimplemented();
+		return thread_suspend_other(thread);
 	}
 	thread_suspend_self();
 	return KERN_SUCCESS;

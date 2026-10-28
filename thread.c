@@ -121,6 +121,7 @@ thread_main(void *arg)
 		sigdelset(&others, SIGBUS);
 		sigdelset(&others, SIGTRAP);
 		sigdelset(&others, SIGFPE);
+		sigdelset(&others, thread_suspend_signal());
 		pthread_sigmask(SIG_BLOCK, &others, NULL);
 	}
 	thread->tid = gettid();
@@ -131,6 +132,10 @@ thread_main(void *arg)
 
 	if (sigsetjmp(thread->kernel, 1) != 0) {
 		thread->continuation_pending = true;
+		thread->trap_context = NULL;
+#ifndef __x86_64__
+		syscall_trap_reset();
+#endif
 #ifndef __x86_64__
 		syscall_trap_reset();
 #endif
@@ -233,6 +238,63 @@ thread_suspend_self(void)
 	thread->suspend_count++;
 	while (thread->suspend_count != 0) {
 		pthread_cond_wait(&thread->resumed, &thread->suspend_lock);
+	}
+	pthread_mutex_unlock(&thread->suspend_lock);
+}
+
+int
+thread_suspend_signal(void)
+{
+	return SIGRTMIN + 4;
+}
+
+kern_return_t
+thread_suspend_other(struct thread *thread)
+{
+	pthread_mutex_lock(&thread->suspend_lock);
+	thread->suspend_count++;
+	for (int tries = 0; tries < 500 && thread->stopped_context == NULL
+			&& thread->trap_context == NULL;
+			tries++) {
+		pthread_mutex_unlock(&thread->suspend_lock);
+		if (thread->tid != 0) {
+			syscall(SYS_tgkill, getpid(), thread->tid,
+					thread_suspend_signal());
+		}
+		usleep(2000);
+		pthread_mutex_lock(&thread->suspend_lock);
+	}
+	pthread_mutex_unlock(&thread->suspend_lock);
+	return KERN_SUCCESS;
+}
+
+const void *
+thread_guest_context(struct thread *thread)
+{
+	pthread_mutex_lock(&thread->suspend_lock);
+	const void *context = (thread->suspend_count != 0)
+			? (thread->stopped_context != NULL
+							  ? thread->stopped_context
+							  : thread->trap_context)
+			: NULL;
+	pthread_mutex_unlock(&thread->suspend_lock);
+	return context;
+}
+
+void
+thread_stop_if_suspended(void *context)
+{
+	struct thread *thread = current;
+	if (thread == NULL) {
+		return;
+	}
+	pthread_mutex_lock(&thread->suspend_lock);
+	if (thread->suspend_count != 0) {
+		thread->stopped_context = context;
+		while (thread->suspend_count != 0) {
+			pthread_cond_wait(&thread->resumed, &thread->suspend_lock);
+		}
+		thread->stopped_context = NULL;
 	}
 	pthread_mutex_unlock(&thread->suspend_lock);
 }
