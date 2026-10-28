@@ -300,6 +300,32 @@ thread_stop_if_suspended(void *context)
 }
 
 void
+thread_enter_trap(void *context, void **outer)
+{
+	struct thread *thread = thread_current();
+	pthread_mutex_lock(&thread->suspend_lock);
+	*outer = thread->trap_context;
+	thread->trap_context = context;
+	pthread_mutex_unlock(&thread->suspend_lock);
+}
+
+void
+thread_leave_trap(void *context, void *outer)
+{
+	struct thread *thread = thread_current();
+	pthread_mutex_lock(&thread->suspend_lock);
+	if (thread->suspend_count != 0) {
+		thread->stopped_context = context;
+		while (thread->suspend_count != 0) {
+			pthread_cond_wait(&thread->resumed, &thread->suspend_lock);
+		}
+		thread->stopped_context = NULL;
+	}
+	thread->trap_context = outer;
+	pthread_mutex_unlock(&thread->suspend_lock);
+}
+
+void
 thread_resume_thread(struct thread *thread)
 {
 	pthread_mutex_lock(&thread->suspend_lock);
