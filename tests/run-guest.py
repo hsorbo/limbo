@@ -27,6 +27,7 @@ def main():
         enter_namespace()
 
     register_binfmt(Path(limbo).resolve(), Path(outdir) / "binfmt")
+    drop_privileges()
     binary = compile_program(xcrun, Path(source), Path(outdir))
     broker_process = start_broker(broker, Path(outdir)) if broker else None
     try:
@@ -53,13 +54,54 @@ def skip(reason):
 
 def enter_namespace():
     env = dict(os.environ, LIMBO_TEST_NAMESPACE="1")
-    try:
-        result = subprocess.run(["unshare", "--user", "--map-root-user",
-                                 "--mount", "--propagation", "private",
-                                 sys.executable] + sys.argv, env=env)
-    except FileNotFoundError:
-        skip("unshare is not available")
+    if os.environ.get("LIMBO_TEST_USER") is not None and os.geteuid() == 0:
+        enter_namespace_as_root()
+        return
+    unshare = ["unshare", "--user", "--map-root-user", "--mount",
+               "--propagation", "private"]
+    command = None
+    for candidate in (unshare + ["--map-auto"], unshare):
+        try:
+            probe = subprocess.run(candidate + ["true"], capture_output=True)
+        except FileNotFoundError:
+            skip("unshare is not available")
+        if probe.returncode == 0:
+            command = candidate
+            break
+    if command is None:
+        env = dict(os.environ, LIMBO_TEST_USER=f"{os.getuid()}:{os.getgid()}")
+        command = ["sudo", "-n", "--preserve-env"]
+    result = subprocess.run(command + [sys.executable] + sys.argv, env=env)
     sys.exit(result.returncode)
+
+
+def enter_namespace_as_root():
+    ready_r, ready_w = os.pipe()
+    go_r, go_w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.unshare(os.CLONE_NEWUSER | os.CLONE_NEWNS)
+        os.write(ready_w, b"x")
+        os.read(go_r, 1)
+        os.environ["LIMBO_TEST_NAMESPACE"] = "1"
+        return
+    os.read(ready_r, 1)
+    for kind in ("uid", "gid"):
+        with open(f"/proc/{pid}/{kind}_map", "w") as f:
+            f.write("0 0 65536\n")
+    os.write(go_w, b"x")
+    _, status = os.waitpid(pid, 0)
+    sys.exit(os.waitstatus_to_exitcode(status))
+
+
+def drop_privileges():
+    user = os.environ.get("LIMBO_TEST_USER")
+    if user is None:
+        return
+    uid, gid = (int(n) for n in user.split(":"))
+    os.setgroups([])
+    os.setresgid(gid, gid, gid)
+    os.setresuid(uid, uid, uid)
 
 
 def register_binfmt(limbo, mountpoint):
