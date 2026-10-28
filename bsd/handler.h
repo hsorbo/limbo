@@ -285,6 +285,7 @@ int sys_mkfifo_extended(user_addr_t path, void *uid, void *gid, int mode,
 		user_addr_t xsecurity);
 int sys_mkdir_extended(user_addr_t path, void *uid, void *gid, int mode,
 		user_addr_t xsecurity);
+int sys_identitysvc(int opcode, void *message);
 int sys_shared_region_check_np(uint64_t *start_address);
 int sys_vm_pressure_monitor(int wait_for_pressure, int nsecs_monitored,
 		uint32_t *pages_reclaimed);

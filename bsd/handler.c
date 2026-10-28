@@ -120,6 +120,44 @@ sys_nosys(void)
 	unimplemented();
 }
 
+#define KAUTH_EXTLOOKUP_REGISTER 0
+#define KAUTH_EXTLOOKUP_RESULT (1 << 0)
+#define KAUTH_EXTLOOKUP_WORKER (1 << 1)
+#define KAUTH_EXTLOOKUP_DEREGISTER (1 << 2)
+#define KAUTH_GET_CACHE_SIZES (1 << 3)
+#define KAUTH_SET_CACHE_SIZES (1 << 4)
+#define KAUTH_CLEAR_CACHES (1 << 5)
+
+int
+sys_identitysvc(int opcode, void *message)
+{
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "identitysvc(%#x, %p)\n", opcode, message);
+#endif
+	switch (opcode) {
+	case KAUTH_GET_CACHE_SIZES:
+
+		if (message != NULL) {
+			uint32_t sizes[2] = { 0, 0 };
+			memcpy(message, sizes, sizeof(sizes));
+		}
+		return 0;
+	case KAUTH_SET_CACHE_SIZES:
+	case KAUTH_CLEAR_CACHES:
+	case KAUTH_EXTLOOKUP_DEREGISTER:
+		return 0;
+	case KAUTH_EXTLOOKUP_REGISTER:
+	case KAUTH_EXTLOOKUP_RESULT:
+	case KAUTH_EXTLOOKUP_WORKER:
+	default:
+
+		if (select(0, NULL, NULL, NULL, NULL) < 0 && errno == EINTR) {
+			return _EINTR;
+		}
+		return _EINTR;
+	}
+}
+
 int
 sys_enosys(void)
 {
@@ -5495,7 +5533,7 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 		return sys_mkdir_extended((void *)arg1, (void *)arg2,
 				(void *)arg3, arg4, (void *)arg5);
 	case 0x125:
-		return sys_nosys();
+		return sys_identitysvc(arg1, (void *)arg2);
 	case 0x126:
 		return sys_shared_region_check_np((void *)arg1);
 	case 0x127:
