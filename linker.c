@@ -155,6 +155,14 @@ linker_link(const char *path, const char **dylinker_path, uintptr_t *entry)
 				break;
 			}
 
+			if (cmd->flags & SG_PROTECTED_VERSION_1) {
+				fprintf(stderr,
+						"limbo: %s: the %.16s segment is "
+						"Apple-protected (encrypted): it can't run\n",
+						path, cmd->segname);
+				goto error;
+			}
+
 			if (cmd->vmsize == 0) {
 				break;
 			}
