@@ -1012,7 +1012,7 @@ sys_setpgid(int pid, int pgid)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "setpgid(%p, %p)\n", (void *)pid, (void *)pgid);
 #endif
-	unimplemented();
+	return errno_map(setpgid(pid, pgid));
 }
 
 int
