@@ -79,4 +79,6 @@ void os_dictionary_remove(struct os_object *dictionary, const char *key);
 struct os_object *os_number_create(uint64_t value, uint32_t bits);
 struct os_object *os_boolean_create(bool value);
 struct os_object *os_symbol_create(const char *name);
+struct os_object *os_string_create(const char *string);
+struct os_object *os_data_create(const void *bytes, size_t size);
 bool os_number_value(const struct os_object *number, uint64_t *value);
