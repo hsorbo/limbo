@@ -48,11 +48,13 @@
 #include "handler.h"
 #include "kevent.h"
 #include "osfmk/ipc.h"
+#include "signals.h"
 #include "workq.h"
 #include "xnu-errno.h"
 
 #define EVFILT_READ     -1
 #define EVFILT_WRITE    -2
+#define EVFILT_SIGNAL   -6
 #define EVFILT_MACHPORT -8
 #define EVFILT_TIMER    -7
 #define EVFILT_USER     -10
@@ -573,6 +575,9 @@ knote_attach(struct kqueue *kq, const struct kevent_qos_s *change)
 	kq->knotes = kn;
 
 	knote_touch(kn, change);
+	if (kn->kev.filter == EVFILT_SIGNAL) {
+		signals_watch((int)kn->kev.ident, true);
+	}
 	return kn;
 }
 
@@ -585,6 +590,9 @@ knote_detach(struct knote *kn)
 			*p = kn->next;
 			break;
 		}
+	}
+	if (kn->kev.filter == EVFILT_SIGNAL) {
+		signals_watch((int)kn->kev.ident, false);
 	}
 	if (kn->waiting) {
 		kn->deleted = true;
@@ -1102,7 +1110,8 @@ knote_delivered(struct knote *kn)
 
 	if (kn->kev.flags & (EV_CLEAR | EV_DISPATCH)) {
 		kn->active = false;
-		if (kn->kev.filter == EVFILT_TIMER) {
+		if (kn->kev.filter == EVFILT_TIMER
+				|| kn->kev.filter == EVFILT_SIGNAL) {
 			kn->kev.data = 0;
 		}
 	}
@@ -1159,6 +1168,24 @@ kevent_close(int fd)
 				knote_detach(kn);
 			}
 			kn = next;
+		}
+	}
+	pthread_mutex_unlock(&lock);
+}
+
+void
+kevent_signal(int sig, int64_t count)
+{
+	pthread_mutex_lock(&lock);
+	for (struct kqueue *kq = &workq_kqueue; kq != NULL;
+			kq = kqueue_next(kq)) {
+		for (struct knote *kn = kq->knotes; kn != NULL; kn = kn->next) {
+			if (kn->kev.filter == EVFILT_SIGNAL
+					&& kn->kev.ident == (uint64_t)sig) {
+				kn->kev.data += count;
+				kn->active = true;
+				kqueue_request(kq, kn->manager);
+			}
 		}
 	}
 	pthread_mutex_unlock(&lock);
