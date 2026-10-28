@@ -37,6 +37,11 @@ struct process {
 	int32_t tpgid;
 	int32_t nice;
 	uint64_t start_ticks;
+	uint64_t user_ticks;
+	uint64_t system_ticks;
+	int32_t threads;
+	uint64_t virtual_size;
+	uint64_t resident_pages;
 	char comm[16];
 	uint32_t uid[3];
 	uint32_t gid[3];
@@ -45,5 +50,7 @@ struct process {
 int process_lookup(int32_t pid, struct process *process);
 void process_start_time(
 		const struct process *process, uint64_t *sec, uint64_t *usec);
+
+uint64_t process_ticks_to_nanoseconds(uint64_t ticks);
 
 bool process_executable_path(int32_t pid, char *path);
