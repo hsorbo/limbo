@@ -432,7 +432,8 @@ task_set_exception_ports(task_t task, exception_mask_t exception_mask,
 			(void *)task, (void *)exception_mask, (void *)new_port,
 			(void *)behavior, (void *)new_flavor);
 #endif
-	unimplemented();
+
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -450,7 +451,9 @@ task_get_exception_ports(task_t task, exception_mask_t exception_mask,
 			(void *)masksCnt, (void *)old_handlers,
 			(void *)old_behaviors, (void *)old_flavors);
 #endif
-	unimplemented();
+
+	*masksCnt = 0;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -471,7 +474,9 @@ task_swap_exception_ports(task_t task, exception_mask_t exception_mask,
 			(void *)masksCnt, (void *)old_handlers,
 			(void *)old_behaviors, (void *)old_flavors);
 #endif
-	unimplemented();
+
+	*masksCnt = 0;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -1035,7 +1040,8 @@ task_register_hardened_exception_handler(task_t task, uint32_t signed_pc_key,
 			(void *)exceptions_allowed, (void *)behaviors_allowed,
 			(void *)flavors_allowed, (void *)new_exception_port);
 #endif
-	unimplemented();
+
+	return KERN_SUCCESS;
 }
 
 void

@@ -55,6 +55,7 @@ static void *signal_semaphore(void *arg);
 static void check_time(void);
 static void check_memory_entries(void);
 static void check_shared_range_entries(void);
+static void check_exception_ports(void);
 static mach_port_t allocate_port(void);
 
 int
@@ -65,7 +66,29 @@ main(void)
 	check_semaphores();
 	check_time();
 	check_memory_entries();
+	check_exception_ports();
 	return 0;
+}
+
+static void
+check_exception_ports(void)
+{
+	exception_mask_t masks[EXC_TYPES_COUNT];
+	mach_msg_type_number_t count = EXC_TYPES_COUNT;
+	mach_port_t handlers[EXC_TYPES_COUNT];
+	exception_behavior_t behaviors[EXC_TYPES_COUNT];
+	thread_state_flavor_t flavors[EXC_TYPES_COUNT];
+	CHECK(task_get_exception_ports(mach_task_self(), EXC_MASK_CRASH, masks,
+			      &count, handlers, behaviors, flavors)
+			== KERN_SUCCESS);
+
+	mach_port_t port = allocate_port();
+	CHECK(mach_port_insert_right(mach_task_self(), port, port,
+			      MACH_MSG_TYPE_MAKE_SEND)
+			== KERN_SUCCESS);
+	CHECK(task_set_exception_ports(mach_task_self(), EXC_MASK_CRASH, port,
+			      EXCEPTION_DEFAULT, THREAD_STATE_NONE)
+			== KERN_SUCCESS);
 }
 
 static void
