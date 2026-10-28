@@ -217,6 +217,9 @@ sys_open(user_addr_t path, int flags, int mode)
 	fprintf(stderr, "open(\"%s\", %p, %p)\n", (char *)path, (void *)flags,
 			(void *)mode);
 #endif
+	if (path == NULL) {
+		return _EFAULT;
+	}
 	char buffer[PATH_MAX];
 	return errno_map(open(
 			sysroot_host_path(path, open_follow(flags), buffer),
