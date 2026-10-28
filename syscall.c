@@ -38,10 +38,10 @@
 #ifndef __x86_64__
 #include <linux/filter.h>
 #include <linux/seccomp.h>
-#include <pthread.h>
 #include <stddef.h>
-#include <sys/mman.h>
 #endif
+#include <pthread.h>
+#include <sys/mman.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -65,11 +65,11 @@ static const uint8_t selector = SYSCALL_DISPATCH_FILTER_BLOCK;
 
 static void handle_syscall(int sig, siginfo_t *info, void *ucontext);
 static bool returns_raw_result(unsigned long syscall, uint64_t arg1);
-#ifndef __x86_64__
-static int filter_install(const Elf64_Phdr *phdrs, unsigned long e_phnum);
 static int signal_stack_install(void);
 static void signal_stack_create_key(void);
 static void signal_stack_free(void *base);
+#ifndef __x86_64__
+static int filter_install(const Elf64_Phdr *phdrs, unsigned long e_phnum);
 
 static bool filter_installed;
 #endif
@@ -77,6 +77,7 @@ static bool filter_installed;
 #ifdef __x86_64__
 static void set_bsd_result(greg_t *regs, int64_t result);
 
+static __thread bool guest_thread;
 static __thread bool rdx_pending;
 static __thread uint64_t rdx_value;
 #else
@@ -85,6 +86,14 @@ static __thread uint64_t rdx_value;
 static void emulate_system_register(int sig, siginfo_t *info, void *ucontext);
 static void dispatch_syscall(mcontext_t *mc);
 static void set_bsd_result(mcontext_t *mc, int64_t result);
+static __thread uint64_t guest_thread_pointer;
+static __thread bool x1_pending;
+static __thread uint64_t x1_value;
+
+static __thread ucontext_t *trap_context;
+static __thread bool context_kept;
+#endif
+
 #define SIGNAL_STACK_SIZE (1UL << 20)
 
 struct signal_stack {
@@ -93,19 +102,12 @@ struct signal_stack {
 
 static pthread_key_t signal_stack_key;
 static pthread_once_t signal_stack_once = PTHREAD_ONCE_INIT;
-static __thread uint64_t guest_thread_pointer;
-static __thread bool x1_pending;
-static __thread uint64_t x1_value;
-
-static __thread ucontext_t *trap_context;
-static __thread bool context_kept;
 
 static uintptr_t limbo_text_start, limbo_text_end;
 static uintptr_t vdso_start, vdso_end;
 static void find_limbo_text(void);
 static bool in_limbo(uint64_t pc);
 static void handle_suspend(int sig, siginfo_t *info, void *ucontext);
-#endif
 
 #ifndef __x86_64__
 #ifndef SA_RESTORER
@@ -129,9 +131,9 @@ syscall_handler_install(void)
 	memset(&act, 0, sizeof(act));
 	sigemptyset(&act.sa_mask);
 	act.sa_sigaction = handle_syscall;
-	act.sa_flags = SA_SIGINFO | SA_NODEFER;
+	act.sa_flags = SA_SIGINFO | SA_NODEFER | SA_ONSTACK;
 #ifndef __x86_64__
-	act.sa_flags |= SA_ONSTACK | SA_RESTORER;
+	act.sa_flags |= SA_RESTORER;
 	act.sa_restorer = limbo_rt_sigreturn;
 #endif
 
@@ -529,13 +531,15 @@ syscall_set_rdx(uint64_t value)
 int
 syscall_dispatch_enable(void)
 {
-#ifndef __x86_64__
 	if (signal_stack_install()) {
 		return 1;
 	}
+#ifndef __x86_64__
 	if (filter_installed) {
 		return 0;
 	}
+#else
+	guest_thread = true;
 #endif
 
 	/* Enumerate the program headers of the executable to determine the
@@ -611,6 +615,7 @@ filter_install(const Elf64_Phdr *phdrs, unsigned long e_phnum)
 	filter_installed = true;
 	return 0;
 }
+#endif
 
 static int
 signal_stack_install(void)
@@ -636,7 +641,9 @@ signal_stack_install(void)
 	munmap(base + SIGNAL_STACK_SIZE, region + SIGNAL_STACK_SIZE - base);
 
 	struct signal_stack *stack = (struct signal_stack *)base;
+#ifndef __x86_64__
 	asm volatile("mrs %0, tpidr_el0" : "=r"(stack->thread_pointer));
+#endif
 
 	stack_t ss = {
 			.ss_sp = base + sizeof(*stack),
@@ -662,4 +669,3 @@ signal_stack_free(void *base)
 	sigaltstack(&ss, NULL);
 	munmap(base, SIGNAL_STACK_SIZE);
 }
-#endif
