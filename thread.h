@@ -30,6 +30,7 @@
 #include <mach/mach.h>
 #include <pthread.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -73,6 +74,9 @@ struct thread {
 	pthread_mutex_t suspend_lock;
 	pthread_cond_t resumed;
 	uint32_t suspend_count;
+
+	void *stopped_context;
+	void *trap_context;
 };
 
 struct thread *thread_current(void);
@@ -82,4 +86,8 @@ void __attribute__((noreturn)) thread_enter(const struct thread_state *state);
 void __attribute__((noreturn)) thread_block(void);
 void thread_suspend_self(void);
 void thread_resume_thread(struct thread *thread);
+kern_return_t thread_suspend_other(struct thread *thread);
+const void *thread_guest_context(struct thread *thread);
+void thread_stop_if_suspended(void *context);
+int thread_suspend_signal(void);
 void __attribute__((noreturn)) thread_exit(void *stack, size_t stack_size);

@@ -26,6 +26,7 @@ guest_tests = [
   'sandbox.c',
   'semaphore.c',
   'spawn.c',
+  'suspend.c',
   'sysinfo.c',
   'threads.c',
   'xpc.c',
