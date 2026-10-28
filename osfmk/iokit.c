@@ -512,7 +512,9 @@ is_io_registry_entry_create_iterator(mach_port_t registry_entry,
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "is_io_registry_entry_create_iterator\n");
 #endif
-	unimplemented();
+	/* The registry here has no tree to walk, only entries found by path
+	 * or by matching */
+	return exhausted_iterator(iterator);
 }
 
 kern_return_t
