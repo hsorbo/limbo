@@ -4469,7 +4469,12 @@ sys_terminate_with_payload(int pid, uint32_t reason_namespace,
 			(void *)payload_size, (void *)reason_string,
 			(void *)reason_flags);
 #endif
-	unimplemented();
+	if (pid == getpid()) {
+		sys_abort_with_payload(reason_namespace, reason_code, payload,
+				payload_size, reason_string, reason_flags);
+	}
+
+	return errno_map(kill(pid, SIGKILL));
 }
 
 int __attribute__((noreturn)) sys_abort_with_payload(uint32_t reason_namespace,
@@ -4534,7 +4539,17 @@ sys_os_fault_with_payload(uint32_t reason_namespace, uint64_t reason_code,
 			(void *)payload, (void *)payload_size,
 			(void *)reason_string, (void *)reason_flags);
 #endif
-	unimplemented();
+
+	fprintf(stderr, "limbo: abort, namespace %u, code %#llx: %s\n",
+			reason_namespace, (unsigned long long)reason_code,
+			reason_string != NULL ? reason_string : "");
+	signal(SIGABRT, SIG_DFL);
+	sigset_t abort_set;
+	sigemptyset(&abort_set);
+	sigaddset(&abort_set, SIGABRT);
+	pthread_sigmask(SIG_UNBLOCK, &abort_set, NULL);
+	raise(SIGABRT);
+	_exit(134);
 }
 
 uint64_t
