@@ -99,7 +99,37 @@ mach_port_destroy(ipc_space_t task, mach_port_name_t name)
 	fprintf(stderr, "mach_port_destroy(%p, %p)\n", (void *)task,
 			(void *)name);
 #endif
-	unimplemented();
+
+	mach_port_type_t type;
+	kern_return_t result = ipc_port_type(name, &type);
+	if (result != KERN_SUCCESS) {
+		return result;
+	}
+	static const struct {
+		mach_port_type_t type;
+		mach_port_right_t right;
+	} rights[] = {
+		{MACH_PORT_TYPE_SEND, MACH_PORT_RIGHT_SEND},
+		{MACH_PORT_TYPE_SEND_ONCE, MACH_PORT_RIGHT_SEND_ONCE},
+		{MACH_PORT_TYPE_RECEIVE, MACH_PORT_RIGHT_RECEIVE},
+		{MACH_PORT_TYPE_PORT_SET, MACH_PORT_RIGHT_PORT_SET},
+		{MACH_PORT_TYPE_DEAD_NAME, MACH_PORT_RIGHT_DEAD_NAME},
+	};
+	for (size_t i = 0; i < sizeof(rights) / sizeof(rights[0]); i++) {
+		if (ipc_port_type(name, &type) != KERN_SUCCESS) {
+			break;
+		}
+		if (!(type & rights[i].type)) {
+			continue;
+		}
+		mach_port_urefs_t refs = 1;
+		ipc_port_get_refs(name, rights[i].right, &refs);
+		if (refs != 0) {
+			ipc_port_mod_refs(name, rights[i].right,
+					-(mach_port_delta_t)refs);
+		}
+	}
+	return KERN_SUCCESS;
 }
 
 kern_return_t
