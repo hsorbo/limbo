@@ -2469,7 +2469,11 @@ sys_mlock(void *addr, size_t len)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "mlock(%p, %p)\n", (void *)addr, (void *)len);
 #endif
-	unimplemented();
+
+	if (mlock(addr, len) == -1 && errno != ENOMEM && errno != EPERM) {
+		return errno_map(-1);
+	}
+	return 0;
 }
 
 int
@@ -2478,7 +2482,7 @@ sys_munlock(void *addr, size_t len)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "munlock(%p, %p)\n", (void *)addr, (void *)len);
 #endif
-	unimplemented();
+	return errno_map(munlock(addr, len));
 }
 
 int
