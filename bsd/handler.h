@@ -79,6 +79,7 @@ int sys_kill(int pid, int signum, int posix);
 int sys_getppid(void);
 int sys_sys_dup(uint32_t fd);
 int sys_pipe(int pipefd[2]);
+int sys_pipe2(int pipefd[2], int flags);
 int sys_getegid(void);
 int sys_sigaction(int signum, void *nsa, void *osa);
 int sys_getgid(void);

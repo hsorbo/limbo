@@ -672,6 +672,33 @@ sys_pipe(int pipefd[2])
 	return fds[0];
 }
 
+#define _O_CLOFORK 0x08000000
+
+int
+sys_pipe2(int pipefd[2], int flags)
+{
+#ifdef ENABLE_STRACE
+	fprintf(stderr, "pipe2(%p, %p)\n", (void *)pipefd, (void *)flags);
+#endif
+	if (flags & ~(_O_NONBLOCK | _O_CLOEXEC | _O_CLOFORK)) {
+		return _EINVAL;
+	}
+
+	int linux_flags = 0;
+	if (flags & _O_NONBLOCK) {
+		linux_flags |= O_NONBLOCK;
+	}
+	if (flags & _O_CLOEXEC) {
+		linux_flags |= O_CLOEXEC;
+	}
+	int fds[2];
+	if (pipe2(fds, linux_flags) == -1) {
+		return err_map(errno);
+	}
+	syscall_set_rdx(fds[1]);
+	return fds[0];
+}
+
 int
 sys_getegid(void)
 {
@@ -4728,7 +4755,7 @@ sys_bsd(unsigned long syscall, uint64_t arg1, uint64_t arg2, uint64_t arg3,
 	case 0x93:
 		return sys_setsid();
 	case 0x94:
-		return sys_nosys();
+		return sys_pipe2((void *)arg1, arg2);
 	case 0x95:
 		return sys_nosys();
 	case 0x96:
