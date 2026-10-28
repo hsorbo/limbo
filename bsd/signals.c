@@ -37,6 +37,7 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/random.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include "bsd/handler.h"
@@ -312,6 +313,8 @@ install_host_action(int sig)
 		sigdelset(&act.sa_mask, SIGILL);
 		sigdelset(&act.sa_mask, SIGSEGV);
 		sigdelset(&act.sa_mask, SIGBUS);
+		sigdelset(&act.sa_mask, SIGTRAP);
+		sigdelset(&act.sa_mask, SIGFPE);
 	} else if (action->handler == _SIG_IGN && !is_fault(host)) {
 		act.sa_handler = SIG_IGN;
 	} else if (host == SIGPIPE || host == SIGIO) {
@@ -412,6 +415,13 @@ signals_handle(int sig, siginfo_t *info, ucontext_t *uc,
 		}
 	}
 	if (!caught) {
+#ifdef ENABLE_STRACE
+
+		if (is_fault(sig) && action->handler == _SIG_DFL) {
+			signal(sig, SIG_DFL);
+			syscall(SYS_tgkill, getpid(), gettid(), sig);
+		}
+#endif
 		return;
 	}
 
@@ -447,6 +457,8 @@ signals_trap_exit(ucontext_t *uc)
 	sigdelset(&all, SIGILL);
 	sigdelset(&all, SIGSEGV);
 	sigdelset(&all, SIGBUS);
+	sigdelset(&all, SIGTRAP);
+	sigdelset(&all, SIGFPE);
 	pthread_sigmask(SIG_BLOCK, &all, NULL);
 
 	uint32_t pending = thread_pending;

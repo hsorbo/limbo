@@ -108,6 +108,8 @@ thread_main(void *arg)
 	sigaddset(&needed, SIGILL);
 	sigaddset(&needed, SIGSEGV);
 	sigaddset(&needed, SIGBUS);
+	sigaddset(&needed, SIGTRAP);
+	sigaddset(&needed, SIGFPE);
 	pthread_sigmask(SIG_UNBLOCK, &needed, NULL);
 
 	if (thread->continuation != NULL) {
@@ -117,6 +119,8 @@ thread_main(void *arg)
 		sigdelset(&others, SIGILL);
 		sigdelset(&others, SIGSEGV);
 		sigdelset(&others, SIGBUS);
+		sigdelset(&others, SIGTRAP);
+		sigdelset(&others, SIGFPE);
 		pthread_sigmask(SIG_BLOCK, &others, NULL);
 	}
 	thread->tid = gettid();
