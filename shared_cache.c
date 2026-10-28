@@ -73,6 +73,7 @@ static const char *prepared_cache_path(const dyld_cache_header_t *header,
 static int map_cache(
 		const char *path, dyld_cache_header_t *header, bool prepared);
 static void prepare_cache(const char *path, dyld_cache_header_t *header);
+static void make_prepared_root(void);
 static int map_dynamic_data(
 		int f, const char *path, dyld_cache_header_t *header);
 static void prepared_cache_directory(
@@ -238,7 +239,7 @@ prepare_cache(const char *path, dyld_cache_header_t *header)
 	prepared_cache_directory(header, directory);
 	snprintf(lock_path, sizeof(lock_path), "%s.lock", directory);
 
-	mkdir(sysroot_host_path(PREPARED_ROOT, 0, buffer), 0755);
+	make_prepared_root();
 	int lock = open(sysroot_host_path(lock_path, 0, buffer),
 			O_CREAT | O_RDWR | O_CLOEXEC, 0644);
 	if (lock == -1) {
@@ -248,6 +249,24 @@ prepare_cache(const char *path, dyld_cache_header_t *header)
 		prepare_cache_locked(path, directory, header);
 	}
 	close(lock);
+}
+
+static void
+make_prepared_root(void)
+{
+	char path[] = PREPARED_ROOT, buffer[PATH_MAX];
+	for (char *c = path + 1;; c++) {
+		if (*c != '/' && *c != '\0') {
+			continue;
+		}
+		char saved = *c;
+		*c = '\0';
+		mkdir(sysroot_host_path(path, 0, buffer), 0755);
+		if (saved == '\0') {
+			return;
+		}
+		*c = saved;
+	}
 }
 
 static int
