@@ -24,6 +24,7 @@ guest_tests = [
   'kqueue_dispatch2.c',
   'mach.c',
   'paths.c',
+  'persona.c',
   'sandbox.c',
   'semaphore.c',
   'spawn.c',
