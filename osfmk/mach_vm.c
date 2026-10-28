@@ -32,12 +32,14 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <mach/mach_types.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "ipc.h"
@@ -63,6 +65,9 @@ static kern_return_t remap_share(mach_vm_address_t *target_address,
 		mach_vm_address_t src_address, vm_prot_t protection);
 static int share_in_place(mach_vm_address_t address, mach_vm_size_t size,
 		vm_prot_t protection);
+static int shared_range_fd(mach_vm_address_t start);
+static void shared_range_add(mach_vm_address_t start, int fd);
+static bool region_inode(mach_vm_address_t start, ino_t *inode);
 static int copy_range(mach_vm_address_t address, mach_vm_size_t size);
 static kern_return_t remap_copy(mach_vm_address_t *target_address,
 		mach_vm_size_t size, mach_vm_offset_t mask, int flags,
@@ -466,6 +471,8 @@ share_in_place(mach_vm_address_t address, mach_vm_size_t size,
 	 * entry names, and a second entry of it must name the same memory, not
 	 * a copy of it: coreservicesd makes an entry of its store's segment
 	 * for every client (limbo-19k.96). The mapping's file is the memfd
+	 * the range was moved into, which limbo keeps, as /proc's map_files
+	 * would need a privilege
 	 */
 	mach_vm_address_t start;
 	mach_vm_size_t region_size;
@@ -477,12 +484,7 @@ share_in_place(mach_vm_address_t address, mach_vm_size_t size,
 			&& region_shared && start <= address
 			&& address + size <= start + region_size
 			&& file_offset + (address - start) == 0) {
-		char path[80];
-		snprintf(path, sizeof(path),
-				"/proc/thread-self/map_files/%llx-%llx",
-				(unsigned long long)start,
-				(unsigned long long)(start + region_size));
-		int same = open(path, O_RDWR | O_CLOEXEC);
+		int same = shared_range_fd(start);
 		if (same != -1) {
 			return same;
 		}
@@ -501,7 +503,93 @@ share_in_place(mach_vm_address_t address, mach_vm_size_t size,
 		}
 		return -1;
 	}
+	if (!shared) {
+		shared_range_add(address, fd);
+	}
 	return fd;
+}
+
+/*
+ * The memfds ranges were moved into, by where they start, while the range is
+ * still mapped from it
+ */
+struct shared_range {
+	struct shared_range *next;
+	mach_vm_address_t start;
+	int fd;
+};
+
+static struct shared_range *shared_ranges;
+static pthread_mutex_t shared_ranges_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* A descriptor of the memfd the range at START is mapped from, or -1 */
+static int
+shared_range_fd(mach_vm_address_t start)
+{
+	ino_t inode;
+	bool mapped = region_inode(start, &inode);
+	int fd = -1;
+	pthread_mutex_lock(&shared_ranges_lock);
+	struct shared_range **link = &shared_ranges;
+	while (*link != NULL) {
+		struct shared_range *range = *link;
+		struct stat status;
+		if (range->start != start) {
+			link = &range->next;
+			continue;
+		}
+		if (mapped && fstat(range->fd, &status) == 0
+				&& status.st_ino == inode) {
+			fd = fcntl(range->fd, F_DUPFD_CLOEXEC, 0);
+			break;
+		}
+		/* The range was unmapped or mapped anew since */
+		*link = range->next;
+		close(range->fd);
+		free(range);
+	}
+	pthread_mutex_unlock(&shared_ranges_lock);
+	return fd;
+}
+
+static void
+shared_range_add(mach_vm_address_t start, int fd)
+{
+	struct shared_range *range = malloc(sizeof(*range));
+	range->start = start;
+	range->fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+	if (range->fd == -1) {
+		free(range);
+		return;
+	}
+	pthread_mutex_lock(&shared_ranges_lock);
+	range->next = shared_ranges;
+	shared_ranges = range;
+	pthread_mutex_unlock(&shared_ranges_lock);
+}
+
+/* The inode of the file the mapping that starts at START maps */
+static bool
+region_inode(mach_vm_address_t start, ino_t *inode)
+{
+	FILE *maps = fopen("/proc/thread-self/maps", "r");
+	char line[512];
+	bool found = false;
+	while (maps != NULL && fgets(line, sizeof(line), maps) != NULL) {
+		unsigned long low;
+		unsigned long long number;
+		if (sscanf(line, "%lx-%*x %*s %*x %*s %llu", &low, &number)
+						== 2
+				&& low == start) {
+			*inode = (ino_t)number;
+			found = true;
+			break;
+		}
+	}
+	if (maps != NULL) {
+		fclose(maps);
+	}
+	return found;
 }
 
 static kern_return_t
@@ -668,9 +756,27 @@ mach_make_memory_entry(vm_map_t target_task, memory_object_size_t *size,
 			(void *)permission, (void *)object_handle,
 			(void *)parent_handle);
 #endif
-	if (parent_handle != MACH_PORT_NULL
-			|| (permission & MAP_MEM_NAMED_CREATE)) {
+	if (parent_handle != MACH_PORT_NULL) {
 		unimplemented();
+	}
+	/*
+	 * A memory object of its own, zeroed, of the size rounded to pages,
+	 * which every map of the entry shares; a purgeable one is never purged
+	 */
+	if (permission & MAP_MEM_NAMED_CREATE) {
+		mach_vm_size_t rounded = (*size + PAGE_MASK) & ~PAGE_MASK;
+		int fd = memfd_create("memory entry", MFD_CLOEXEC);
+		if (fd == -1 || ftruncate(fd, (off_t)rounded) == -1) {
+			if (fd != -1) {
+				close(fd);
+			}
+			return KERN_RESOURCE_SHORTAGE;
+		}
+		struct memory_entry *entry = malloc(sizeof(*entry));
+		*entry = (struct memory_entry){.fd = fd, .size = rounded};
+		*size = rounded;
+		*object_handle = ipc_kobject_alloc(IPC_KOBJECT_MEMORY_ENTRY, entry);
+		return KERN_SUCCESS;
 	}
 
 	mach_vm_address_t start = offset & ~(mach_vm_address_t)PAGE_MASK;

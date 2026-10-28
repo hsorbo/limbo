@@ -27,6 +27,7 @@
 
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <mach/mach_vm.h>
 #include <pthread.h>
 #include <string.h>
 #include <unistd.h>
@@ -52,6 +53,8 @@ static void check_port_sets(void);
 static void check_semaphores(void);
 static void *signal_semaphore(void *arg);
 static void check_time(void);
+static void check_memory_entries(void);
+static void check_shared_range_entries(void);
 static mach_port_t allocate_port(void);
 
 int
@@ -61,6 +64,7 @@ main(void)
 	check_port_sets();
 	check_semaphores();
 	check_time();
+	check_memory_entries();
 	return 0;
 }
 
@@ -204,6 +208,84 @@ check_time(void)
 			+ 20000000ULL * timebase.denom / timebase.numer;
 	CHECK(mach_wait_until(deadline) == KERN_SUCCESS);
 	CHECK(mach_absolute_time() >= deadline);
+}
+
+/*
+ * A named memory entry, as Games makes a purgeable one: new memory, zeroed,
+ * of whole pages, which every map of it shares
+ */
+static void
+check_memory_entries(void)
+{
+	memory_object_size_t size = 3 * vm_page_size - 100;
+	mach_port_t entry = MACH_PORT_NULL;
+	CHECK(mach_make_memory_entry_64(mach_task_self(), &size, 0,
+			      MAP_MEM_NAMED_CREATE | MAP_MEM_PURGABLE
+					      | VM_PROT_READ | VM_PROT_WRITE,
+			      &entry, MACH_PORT_NULL)
+			== KERN_SUCCESS);
+	CHECK(size == 3 * vm_page_size && MACH_PORT_VALID(entry));
+
+	mach_vm_address_t first = 0, second = 0;
+	vm_prot_t rw = VM_PROT_READ | VM_PROT_WRITE;
+	CHECK(mach_vm_map(mach_task_self(), &first, size, 0, VM_FLAGS_ANYWHERE,
+			      entry, 0, false, rw, rw, VM_INHERIT_NONE)
+			== KERN_SUCCESS);
+	CHECK(mach_vm_map(mach_task_self(), &second, size, 0,
+			      VM_FLAGS_ANYWHERE, entry, 0, false, rw, rw,
+			      VM_INHERIT_NONE)
+			== KERN_SUCCESS);
+	CHECK(first != second && ((volatile char *)first)[size - 1] == 0);
+	((volatile char *)first)[vm_page_size + 5] = 42;
+	CHECK(((volatile char *)second)[vm_page_size + 5] == 42);
+
+	CHECK(mach_vm_deallocate(mach_task_self(), first, size) == KERN_SUCCESS);
+	CHECK(mach_vm_deallocate(mach_task_self(), second, size)
+			== KERN_SUCCESS);
+	CHECK(mach_port_deallocate(mach_task_self(), entry) == KERN_SUCCESS);
+
+	check_shared_range_entries();
+}
+
+/*
+ * Entries of a range of the task, without VM_SHARE or VM_COPY, name its
+ * memory, the second as the first, as coreservicesd makes one of a segment
+ * for each client and writes to it after: every map sees the writes
+ */
+static void
+check_shared_range_entries(void)
+{
+	mach_vm_address_t range = 0;
+	mach_vm_size_t size = 2 * vm_page_size;
+	vm_prot_t rw = VM_PROT_READ | VM_PROT_WRITE;
+	CHECK(mach_vm_allocate(mach_task_self(), &range, size,
+			      VM_FLAGS_ANYWHERE)
+			== KERN_SUCCESS);
+	mach_vm_address_t maps[2] = { 0, 0 };
+	mach_port_t entries[2];
+	for (int i = 0; i < 2; i++) {
+		memory_object_size_t entry_size = size;
+		CHECK(mach_make_memory_entry_64(mach_task_self(), &entry_size,
+				      range, rw, &entries[i], MACH_PORT_NULL)
+				== KERN_SUCCESS);
+		CHECK(mach_vm_map(mach_task_self(), &maps[i], size, 0,
+				      VM_FLAGS_ANYWHERE, entries[i], 0, false,
+				      VM_PROT_READ, VM_PROT_READ,
+				      VM_INHERIT_NONE)
+				== KERN_SUCCESS);
+	}
+	((volatile char *)range)[vm_page_size + 7] = 42;
+	CHECK(((volatile char *)maps[0])[vm_page_size + 7] == 42);
+	CHECK(((volatile char *)maps[1])[vm_page_size + 7] == 42);
+
+	for (int i = 0; i < 2; i++) {
+		CHECK(mach_vm_deallocate(mach_task_self(), maps[i], size)
+				== KERN_SUCCESS);
+		CHECK(mach_port_deallocate(mach_task_self(), entries[i])
+				== KERN_SUCCESS);
+	}
+	CHECK(mach_vm_deallocate(mach_task_self(), range, size)
+			== KERN_SUCCESS);
 }
 
 static mach_port_t
