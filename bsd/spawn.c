@@ -199,11 +199,71 @@ spawn_exec(const char *path, const struct darwin_spawnattr *attrp,
 
 #define IMG_SHSIZE 512
 
+static const char *script_path(const char *path, const char *host,
+		char **argv, char *buffer, char ***script_argv);
+static const char *limbo_path(const char *host, char ***argv);
+
 const char *
 exec_path(const char *path, char **argv, char *buffer, char ***script_argv)
 {
-	*script_argv = NULL;
 	const char *host = sysroot_host_path(path, 0, buffer);
+	host = script_path(path, host, argv, buffer, script_argv);
+	char **limbo_argv = (*script_argv != NULL) ? *script_argv : argv;
+	const char *limbo = limbo_path(host, &limbo_argv);
+	if (limbo != host) {
+		free(*script_argv);
+		*script_argv = limbo_argv;
+	}
+	return limbo;
+}
+
+static const char *
+limbo_path(const char *host, char ***argv)
+{
+	int fd = open(host, O_RDONLY | O_CLOEXEC);
+	if (fd == -1) {
+		return host;
+	}
+	uint8_t magic[4];
+	ssize_t length = read(fd, magic, sizeof(magic));
+	close(fd);
+	static const uint8_t macho[4] = {0xcf, 0xfa, 0xed, 0xfe};
+	static const uint8_t fat[4] = {0xca, 0xfe, 0xba, 0xbe};
+	if (length != sizeof(magic)
+			|| (memcmp(magic, macho, 4) != 0
+					&& memcmp(magic, fat, 4) != 0)) {
+		return host;
+	}
+
+	size_t argc = 0;
+	size_t size = strlen(host) + 1 + sizeof("limbo");
+	while ((*argv)[argc] != NULL) {
+		size += strlen((*argv)[argc++]) + 1;
+	}
+	size_t pointers = (argc + 3) * sizeof(char *);
+	char **result = malloc(pointers + size);
+	if (result == NULL) {
+		return host;
+	}
+	char *strings = (char *)result + pointers;
+	result[0] = strcpy(strings, "limbo");
+	strings += sizeof("limbo");
+	result[1] = strcpy(strings, host);
+	strings += strlen(host) + 1;
+	for (size_t i = 0; i < argc; i++) {
+		result[i + 2] = strcpy(strings, (*argv)[i]);
+		strings += strlen((*argv)[i]) + 1;
+	}
+	result[argc + 2] = NULL;
+	*argv = result;
+	return "/proc/self/exe";
+}
+
+static const char *
+script_path(const char *path, const char *host, char **argv, char *buffer,
+		char ***script_argv)
+{
+	*script_argv = NULL;
 	int fd = open(host, O_RDONLY | O_CLOEXEC);
 	if (fd == -1) {
 		return host;
