@@ -129,6 +129,8 @@ static void find_patches(struct sidt_patches *patches,
 		const dyld_cache_header_t *main_header);
 static int write_patches(int f, const struct sidt_patches *patches,
 		const dyld_cache_mapping_and_slide_info_t *text);
+static int fix_eh_frame_personalities(int f,
+		const dyld_cache_mapping_and_slide_info_t *text);
 #endif
 static int write_all(int f, const void *data, size_t size, uint64_t offset);
 
@@ -897,7 +899,8 @@ patch_text(int f, const dyld_cache_mapping_and_slide_info_t *text,
 	if (__builtin_cpu_supports("rdpid")) {
 		find_patches(patches, text, main_header);
 	}
-	return write_patches(f, patches, text);
+	return write_patches(f, patches, text)
+			|| fix_eh_frame_personalities(f, text);
 }
 
 static void
@@ -925,6 +928,75 @@ write_patches(int f, const struct sidt_patches *patches,
 		const struct sidt_patch *patch = &patches->items[i];
 		if (write_all(f, patch->code, patch->length,
 				    text->fileOffset + patch->address
+						    - text->address)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int
+fix_eh_frame_personalities(int f,
+		const dyld_cache_mapping_and_slide_info_t *text)
+{
+	const uint8_t *base = (const uint8_t *)text->address;
+	static const uint8_t cie_start[] = {0, 0, 0, 0, 1, 'z', 'P'};
+	for (uint64_t at = 4; at + sizeof(cie_start) < text->size; at++) {
+		if (memcmp(base + at, cie_start, sizeof(cie_start)) != 0) {
+			continue;
+		}
+		uint32_t length;
+		memcpy(&length, base + at - 4, sizeof(length));
+		const uint8_t *cie = base + at - 4;
+		const uint8_t *end = cie + 4 + length;
+		if (length < 16 || length > 64 || at - 4 + 4 + length > text->size) {
+			continue;
+		}
+
+		const uint8_t *p = cie + 9;
+		if (strcmp((const char *)p, "zPR") != 0) {
+			continue;
+		}
+		p += 4;
+
+		if ((p[0] | p[1] | p[2]) & 0x80 || p[3] != 6) {
+			continue;
+		}
+		const uint8_t *augmentation = p + 4;
+
+		if (augmentation[0] != 0x9b) {
+			continue;
+		}
+		int32_t delta;
+		memcpy(&delta, augmentation + 1, sizeof(delta));
+		uint64_t target = (uint64_t)(uintptr_t)(augmentation + 1)
+				+ (uint64_t)(int64_t)delta;
+		bool in_text = target >= text->address
+				&& target < text->address + text->size;
+		if (!in_text && target % 8 == 0) {
+			continue;
+		}
+		const uint8_t *instructions = augmentation + 6;
+		uint8_t fixed[4 + 64] = {0};
+		size_t n = 0;
+		memcpy(fixed, cie, 4 + 4 + 1);
+		n = 9;
+		memcpy(fixed + n, "zR", 3);
+		n += 3;
+		memcpy(fixed + n, p, 3);
+		n += 3;
+		fixed[n++] = 1;
+		fixed[n++] = augmentation[5];
+		memcpy(fixed + n, instructions, (size_t)(end - instructions));
+
+#ifdef ENABLE_STRACE
+		fprintf(stderr, "limbo: the CIE at %#llx names a personality at "
+				"%#llx, which is no slot: made one without\n",
+				(unsigned long long)(uintptr_t)cie,
+				(unsigned long long)target);
+#endif
+		if (write_all(f, fixed, 4 + length,
+				    text->fileOffset + (uint64_t)(uintptr_t)cie
 						    - text->address)) {
 			return 1;
 		}
