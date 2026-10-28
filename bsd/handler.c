@@ -1719,12 +1719,31 @@ sys_mkdir(user_addr_t path, int mode)
 			mode));
 }
 
+static bool
+last_component_is_dot(const char *path)
+{
+	size_t end = strlen(path);
+	while (end > 1 && path[end - 1] == '/') {
+		end--;
+	}
+	size_t start = end;
+	while (start > 0 && path[start - 1] != '/') {
+		start--;
+	}
+	return (end - start == 1 && path[start] == '.')
+			|| (end - start == 2 && path[start] == '.'
+					&& path[start + 1] == '.');
+}
+
 int
 sys_rmdir(char *path)
 {
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "rmdir(%p)\n", (void *)path);
 #endif
+	if (last_component_is_dot(path)) {
+		return _EINVAL;
+	}
 	char buffer[PATH_MAX];
 	return errno_map(rmdir(
 			sysroot_host_path(path, AT_SYMLINK_NOFOLLOW, buffer)));
