@@ -46,6 +46,7 @@
 #include <mach-o/loader.h>
 #include <mach/machine/thread_status.h>
 #include <mach/mach.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
@@ -188,6 +189,8 @@ sys_write(int fd, user_addr_t cbuf, user_size_t nbyte)
 
 static int open_follow(int flags);
 static int fpathconf_value(int fd, int name);
+static short poll_events_to_linux(short events);
+static short poll_events_from_linux(short events);
 static struct timeval *convert_timevals(
 		const void *tptr, struct timeval *times);
 static unsigned int rename_flags(uint32_t flags);
@@ -2301,7 +2304,50 @@ sys_poll(void *fds, uint32_t nfds, int timeout)
 	fprintf(stderr, "poll(%p, %p, %p)\n", (void *)fds, (void *)nfds,
 			(void *)timeout);
 #endif
-	unimplemented();
+	struct pollfd *guest = fds;
+	struct pollfd *host = calloc((nfds > 0) ? nfds : 1, sizeof(*host));
+	if (host == NULL) {
+		return _ENOMEM;
+	}
+	for (uint32_t i = 0; i < nfds; i++) {
+		host[i].fd = guest[i].fd;
+		host[i].events = poll_events_to_linux(guest[i].events);
+	}
+	int result = poll(host, nfds, timeout);
+	int err = errno;
+	if (result != -1) {
+		for (uint32_t i = 0; i < nfds; i++) {
+			guest[i].revents = poll_events_from_linux(host[i].revents);
+		}
+	}
+	free(host);
+	return (result == -1) ? err_map(err) : result;
+}
+
+#define _POLLWRBAND 0x0100
+#define POLL_COMMON (POLLIN | POLLPRI | POLLOUT | POLLRDNORM | POLLRDBAND)
+
+static short
+poll_events_to_linux(short events)
+{
+	short result = events & POLL_COMMON;
+	if (events & _POLLWRBAND) {
+		result |= POLLWRBAND;
+	}
+	return result;
+}
+
+static short
+poll_events_from_linux(short events)
+{
+	short result = events & (POLL_COMMON | POLLERR | POLLHUP | POLLNVAL);
+	if (events & POLLWRNORM) {
+		result |= POLLOUT;
+	}
+	if (events & POLLWRBAND) {
+		result |= _POLLWRBAND;
+	}
+	return result;
 }
 
 int
