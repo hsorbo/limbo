@@ -362,15 +362,13 @@ handle_syscall(int sig, siginfo_t *info, void *ucontext)
 	guest_thread_pointer = entry_pointer;
 	ucontext_t *outer_context = trap_context;
 	trap_context = ucontext;
-	struct thread *self = thread_current();
-	void *outer_trap = self->trap_context;
-	self->trap_context = ucontext;
+	void *outer_trap;
+	thread_enter_trap(ucontext, &outer_trap);
 
 	dispatch_syscall(mc);
 	signals_trap_exit(ucontext);
-	thread_stop_if_suspended(ucontext);
+	thread_leave_trap(ucontext, outer_trap);
 
-	self->trap_context = outer_trap;
 	trap_context = outer_context;
 	uint64_t resume_pointer = guest_thread_pointer;
 	guest_thread_pointer = outer_pointer;

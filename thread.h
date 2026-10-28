@@ -89,5 +89,7 @@ void thread_resume_thread(struct thread *thread);
 kern_return_t thread_suspend_other(struct thread *thread);
 const void *thread_guest_context(struct thread *thread);
 void thread_stop_if_suspended(void *context);
+void thread_enter_trap(void *context, void **outer);
+void thread_leave_trap(void *context, void *outer);
 int thread_suspend_signal(void);
 void __attribute__((noreturn)) thread_exit(void *stack, size_t stack_size);
