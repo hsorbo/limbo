@@ -72,6 +72,8 @@ enum {
 #define FAT_MAGIC_64               0xcafebabf
 #define MH_MAGIC_64                0xfeedfacf
 #define LC_CODE_SIGNATURE          0x1d
+#define LC_BUILD_VERSION           0x32
+#define PLATFORM_MACOS             1
 #define CPU_TYPE_ARM64             0x0100000c
 #define CPU_SUBTYPE_ARM64E         2
 #define CSMAGIC_EMBEDDED_SIGNATURE 0xfade0cc0
@@ -94,6 +96,8 @@ struct signature {
 
 static bool signature_load(int32_t pid, struct signature *signature);
 static bool read_slice(int fd, uint64_t *offset);
+static uint8_t *read_commands(int fd, uint64_t offset, uint32_t *ncmds,
+		uint32_t *sizeofcmds);
 static bool read_signature(
 		int fd, uint64_t offset, struct signature *signature);
 static void index_blobs(struct signature *signature);
@@ -249,20 +253,69 @@ read_slice(int fd, uint64_t *offset)
 	return found;
 }
 
-static bool
-read_signature(int fd, uint64_t offset, struct signature *signature)
+static uint8_t *
+read_commands(int fd, uint64_t offset, uint32_t *ncmds, uint32_t *sizeofcmds)
 {
 	uint32_t header[8];
 	if (pread(fd, header, sizeof(header), offset) != sizeof(header)
 			|| header[0] != MH_MAGIC_64) {
-		return false;
+		return NULL;
 	}
-	uint32_t ncmds = header[4];
-	uint32_t sizeofcmds = header[5];
-	uint8_t *commands = malloc(sizeofcmds);
-	if (pread(fd, commands, sizeofcmds, offset + sizeof(header))
-			!= (ssize_t)sizeofcmds) {
+	*ncmds = header[4];
+	*sizeofcmds = header[5];
+	uint8_t *commands = malloc(*sizeofcmds);
+	if (pread(fd, commands, *sizeofcmds, offset + sizeof(header))
+			!= (ssize_t)*sizeofcmds) {
 		free(commands);
+		return NULL;
+	}
+	return commands;
+}
+
+uint32_t
+codesign_platform(int32_t pid)
+{
+	char path[PATH_MAX];
+	if (!process_executable_path(pid == 0 ? getpid() : pid, path)) {
+		return PLATFORM_MACOS;
+	}
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd == -1) {
+		return PLATFORM_MACOS;
+	}
+	uint32_t platform = PLATFORM_MACOS;
+	uint64_t offset;
+	uint32_t ncmds, sizeofcmds;
+	uint8_t *commands = read_slice(fd, &offset)
+			? read_commands(fd, offset, &ncmds, &sizeofcmds)
+			: NULL;
+	close(fd);
+	if (commands == NULL) {
+		return platform;
+	}
+	for (uint32_t i = 0, at = 0; i < ncmds && at + 8 <= sizeofcmds; i++) {
+		uint32_t cmd, cmdsize;
+		memcpy(&cmd, commands + at, 4);
+		memcpy(&cmdsize, commands + at + 4, 4);
+		if (cmd == LC_BUILD_VERSION && at + 12 <= sizeofcmds) {
+			memcpy(&platform, commands + at + 8, 4);
+			break;
+		}
+		if (cmdsize < 8) {
+			break;
+		}
+		at += cmdsize;
+	}
+	free(commands);
+	return platform;
+}
+
+static bool
+read_signature(int fd, uint64_t offset, struct signature *signature)
+{
+	uint32_t ncmds, sizeofcmds;
+	uint8_t *commands = read_commands(fd, offset, &ncmds, &sizeofcmds);
+	if (commands == NULL) {
 		return false;
 	}
 

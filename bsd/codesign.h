@@ -31,3 +31,5 @@
 #include <stdint.h>
 
 int codesign_ops(int32_t pid, uint32_t ops, void *buffer, size_t size);
+
+uint32_t codesign_platform(int32_t pid);
