@@ -4053,7 +4053,8 @@ sys_system_override(uint64_t timeout, uint64_t flags)
 	fprintf(stderr, "system_override(%p, %p)\n", (void *)timeout,
 			(void *)flags);
 #endif
-	unimplemented();
+
+	return 0;
 }
 
 int
