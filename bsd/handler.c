@@ -3877,7 +3877,42 @@ sys_connectx(int socket, void *endpoints, void *associd, void *flags, void *iov,
 			(void *)flags, (void *)iov, (void *)iovcnt, (void *)len,
 			(void *)connid);
 #endif
-	unimplemented();
+
+	const struct {
+		uint32_t source_interface;
+		const void *source;
+		uint32_t source_length;
+		const void *destination;
+		uint32_t destination_length;
+	} *ends = endpoints;
+	if (ends == NULL || ends->destination == NULL) {
+		return _EINVAL;
+	}
+	if (ends->source != NULL && ends->source_length != 0) {
+		int error = sys_bind(socket, (void *)ends->source,
+				(void *)(uintptr_t)ends->source_length);
+		if (error != 0) {
+			return error;
+		}
+	}
+	int result = sys_connect(socket, (void *)ends->destination,
+			(void *)(uintptr_t)ends->destination_length);
+
+	size_t sent = 0;
+	unsigned int count = (unsigned int)(uintptr_t)iovcnt;
+	if (result == 0 && iov != NULL && count != 0) {
+		ssize_t written = writev(socket, iov, (int)count);
+		if (written > 0) {
+			sent = (size_t)written;
+		}
+	}
+	if (len != NULL) {
+		*len = sent;
+	}
+	if (connid != NULL) {
+		*(uint32_t *)connid = 1;
+	}
+	return result;
 }
 
 int
