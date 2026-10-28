@@ -200,7 +200,12 @@ mach_vm_inherit(vm_task_entry_t target_task, mach_vm_address_t address,
 			(void *)target_task, (void *)address, (void *)size,
 			(void *)new_inheritance);
 #endif
-	unimplemented();
+
+	(void)target_task;
+	(void)address;
+	(void)size;
+	(void)new_inheritance;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -213,7 +218,14 @@ _kernelrpc_mach_vm_read(vm_map_read_t target_task, mach_vm_address_t address,
 			(void *)target_task, (void *)address, (void *)size,
 			(void *)data, (void *)dataCnt);
 #endif
-	unimplemented();
+	(void)target_task;
+
+	if (size > 64 * 1024 * 1024) {
+		return KERN_INVALID_ARGUMENT;
+	}
+	memcpy(data, (const void *)address, size);
+	*dataCnt = size;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
