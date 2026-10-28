@@ -1205,7 +1205,11 @@ sys_setpriority(int which, void *who, int prio)
 	fprintf(stderr, "setpriority(%p, %p, %p)\n", (void *)which, (void *)who,
 			(void *)prio);
 #endif
-	unimplemented();
+
+	if (which <= PRIO_USER) {
+		return errno_map(setpriority(which, (id_t)(uintptr_t)who, prio));
+	}
+	return 0;
 }
 
 #define xnu_PF_UNIX    1
@@ -1406,7 +1410,15 @@ sys_getpriority(int which, void *who)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "getpriority(%p, %p)\n", (void *)which, (void *)who);
 #endif
-	unimplemented();
+	if (which > PRIO_USER) {
+		return 0;
+	}
+	errno = 0;
+	int priority = getpriority(which, (id_t)(uintptr_t)who);
+	if (priority == -1 && errno != 0) {
+		return errno_map(-1);
+	}
+	return priority;
 }
 
 struct xnu_sockaddr_un {
