@@ -63,9 +63,13 @@ typedef enum {
 	IPC_KOBJECT_BOOTSTRAP,
 	IPC_KOBJECT_LIBINFO,
 	IPC_KOBJECT_MEMORY_ENTRY,
+	/* A file descriptor as a port, which goes to other processes */
+	IPC_KOBJECT_FILEPORT,
 } ipc_kobject_type_t;
 
 mach_port_name_t ipc_task_self(void);
+mach_port_name_t ipc_fileport_alloc(int fd);
+int ipc_fileport_fd(mach_port_name_t name);
 mach_port_name_t ipc_host_self(void);
 mach_port_name_t ipc_bootstrap_self(void);
 mach_port_name_t ipc_kobject_name(ipc_kobject_type_t type);
