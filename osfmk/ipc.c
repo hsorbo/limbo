@@ -259,6 +259,30 @@ ipc_kobject_copy_send(mach_port_name_t name)
 	return name;
 }
 
+/* A send right to a fileport that owns the descriptor */
+mach_port_name_t
+ipc_fileport_alloc(int fd)
+{
+	int *kobject = malloc(sizeof(*kobject));
+	*kobject = fd;
+	pthread_mutex_lock(&lock);
+	struct ipc_port *port = port_alloc(IPC_KOBJECT_FILEPORT);
+	port->kobject = kobject;
+	struct ipc_entry *entry = entry_alloc(port);
+	entry->type |= MACH_PORT_TYPE_SEND;
+	entry->urefs++;
+	pthread_mutex_unlock(&lock);
+	return port->name;
+}
+
+/* The descriptor behind a fileport, or -1 */
+int
+ipc_fileport_fd(mach_port_name_t name)
+{
+	int *kobject = ipc_kobject_lookup(name, IPC_KOBJECT_FILEPORT);
+	return kobject != NULL ? *kobject : -1;
+}
+
 void *
 ipc_kobject_lookup(mach_port_name_t name, ipc_kobject_type_t type)
 {
@@ -1715,6 +1739,10 @@ entry_release_if_unused(struct ipc_entry *entry)
 	}
 	if (port->kotype == IPC_KOBJECT_NONE) {
 		free(port->psets);
+		free(port);
+	} else if (port->kotype == IPC_KOBJECT_FILEPORT) {
+		close(*(int *)port->kobject);
+		free(port->kobject);
 		free(port);
 	}
 	entry->port = NULL;

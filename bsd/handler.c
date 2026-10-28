@@ -84,6 +84,7 @@
 #include "handler.h"
 #include "kevent.h"
 #include "osfmk/broker_client.h"
+#include "osfmk/ipc.h"
 #include "osfmk/semaphore.h"
 #include "shared_cache.h"
 #include "signo.h"
@@ -3790,7 +3791,12 @@ sys_sys_fileport_makeport(int fd, user_addr_t portnamep)
 	fprintf(stderr, "sys_fileport_makeport(%p, %p)\n", (void *)fd,
 			(void *)portnamep);
 #endif
-	unimplemented();
+	int copy = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+	if (copy == -1) {
+		return err_map(errno);
+	}
+	*(mach_port_name_t *)portnamep = ipc_fileport_alloc(copy);
+	return 0;
 }
 
 int
@@ -3799,7 +3805,11 @@ sys_sys_fileport_makefd(mach_port_name_t port)
 #ifdef ENABLE_STRACE
 	fprintf(stderr, "sys_fileport_makefd(%p)\n", (void *)port);
 #endif
-	unimplemented();
+	int fd = ipc_fileport_fd(port);
+	if (fd == -1) {
+		return _EINVAL;
+	}
+	return errno_map(fcntl(fd, F_DUPFD, 0));
 }
 
 int
