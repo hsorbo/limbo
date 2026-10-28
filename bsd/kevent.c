@@ -941,10 +941,16 @@ kqueue_wait(struct kqueue *kq, struct kevent_qos_s *events, int nevents,
 {
 	uint64_t deadline = (timeout > 0) ? now_monotonic() + timeout : 0;
 	while (true) {
+
+		eventfd_t value;
+		eventfd_read(kq->fd, &value);
 		uint8_t *data = NULL;
 		size_t data_size = 0;
 		int count = kqueue_collect(
 				kq, false, events, nevents, &data, &data_size);
+		if (count == nevents) {
+			eventfd_write(kq->fd, 1);
+		}
 		if (count != 0 || timeout == 0) {
 			return count;
 		}

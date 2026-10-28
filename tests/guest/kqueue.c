@@ -75,6 +75,23 @@ main(void)
 	CHECK(kevent(kq, NULL, 0, events, 4, &zero) == 1);
 	CHECK(events[0].flags & EV_EOF);
 	CHECK(close(kq) == 0);
+
+	int inner = kqueue(), outer = kqueue();
+	CHECK(inner != -1 && outer != -1);
+	EV_SET(&changes[0], 7, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+	CHECK(kevent(inner, changes, 1, NULL, 0, NULL) == 0);
+	EV_SET(&changes[0], inner, EVFILT_READ, EV_ADD, 0, 0, NULL);
+	CHECK(kevent(outer, changes, 1, NULL, 0, NULL) == 0);
+	CHECK(kevent(inner, NULL, 0, events, 4, &zero) == 0);
+	CHECK(kevent(outer, NULL, 0, events, 4, &zero) == 0);
+	EV_SET(&changes[0], 7, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+	CHECK(kevent(inner, changes, 1, NULL, 0, NULL) == 0);
+	CHECK(kevent(outer, NULL, 0, events, 4, &zero) == 1);
+	CHECK(events[0].ident == (uintptr_t)inner);
+	CHECK(kevent(inner, NULL, 0, events, 4, &zero) == 1);
+	CHECK(events[0].filter == EVFILT_USER);
+	CHECK(kevent(outer, NULL, 0, events, 4, &zero) == 0);
+	CHECK(close(outer) == 0 && close(inner) == 0);
 	return 0;
 }
 
