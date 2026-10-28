@@ -240,7 +240,8 @@ thread_set_exception_ports(thread_act_t thread, exception_mask_t exception_mask,
 			(void *)thread, (void *)exception_mask,
 			(void *)new_port, (void *)behavior, (void *)new_flavor);
 #endif
-	unimplemented();
+
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -258,7 +259,9 @@ thread_get_exception_ports(thread_act_t thread, exception_mask_t exception_mask,
 			(void *)masksCnt, (void *)old_handlers,
 			(void *)old_behaviors, (void *)old_flavors);
 #endif
-	unimplemented();
+
+	*masksCnt = 0;
+	return KERN_SUCCESS;
 }
 
 kern_return_t
@@ -467,7 +470,8 @@ thread_adopt_exception_handler(thread_t thread, mach_port_t exc_port,
 			(void *)thread, (void *)exc_port, (void *)exc_mask,
 			(void *)behavior_mask, (void *)flavor_mask);
 #endif
-	unimplemented();
+
+	return KERN_SUCCESS;
 }
 
 kern_return_t
