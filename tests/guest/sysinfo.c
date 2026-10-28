@@ -27,6 +27,7 @@
 
 #include <libproc.h>
 #include <mach/mach.h>
+#include <stdbool.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/sysctl.h>
@@ -89,6 +90,18 @@ main(void)
 			== sizeof(bsdinfo));
 	CHECK(bsdinfo.pbi_pid == (uint32_t)getpid());
 	CHECK(bsdinfo.pbi_uid == geteuid());
+
+	int fds_size = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, NULL, 0);
+	CHECK(fds_size > 0);
+	struct proc_fdinfo fds[256];
+	fds_size = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, fds, sizeof(fds));
+	CHECK(fds_size > 0 && fds_size % (int)sizeof(fds[0]) == 0);
+	bool found = false;
+	for (int i = 0; i < fds_size / (int)sizeof(fds[0]); i++) {
+		found = found || fds[i].proc_fd == STDERR_FILENO;
+	}
+	CHECK(found);
+
 	char name[64];
 	CHECK(proc_name(getpid(), name, sizeof(name)) > 0);
 	CHECK(strcmp(name, "sysinfo") == 0);

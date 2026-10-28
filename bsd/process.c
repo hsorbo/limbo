@@ -63,11 +63,15 @@ process_lookup(int32_t pid, struct process *process)
 	char *comm = strchr(line, '(') + 1;
 	snprintf(process->comm, sizeof(process->comm), "%.*s",
 			(int)(fields - comm), comm);
+	long resident = 0;
 	sscanf(fields + 2,
-			"%*c %d %d %*d %*d %d %*u %*u %*u %*u %*u %*u %*u %*d "
-			"%*d %*d %d %*d %*d %lu",
+			"%*c %d %d %*d %*d %d %*u %*u %*u %*u %*u %lu %lu %*d "
+			"%*d %*d %d %d %*d %lu %lu %ld",
 			&process->ppid, &process->pgid, &process->tpgid,
-			&process->nice, &process->start_ticks);
+			&process->user_ticks, &process->system_ticks,
+			&process->nice, &process->threads, &process->start_ticks,
+			&process->virtual_size, &resident);
+	process->resident_pages = resident > 0 ? (uint64_t)resident : 0;
 
 	snprintf(path, sizeof(path), "/proc/%d/status", pid);
 	FILE *status = fopen(path, "r");
@@ -87,6 +91,12 @@ process_start_time(const struct process *process, uint64_t *sec, uint64_t *usec)
 	*sec = boot_time() + process->start_ticks / ticks_per_second;
 	*usec = process->start_ticks % ticks_per_second * 1000000
 			/ ticks_per_second;
+}
+
+uint64_t
+process_ticks_to_nanoseconds(uint64_t ticks)
+{
+	return ticks * (1000000000 / (uint64_t)sysconf(_SC_CLK_TCK));
 }
 
 static void

@@ -34,8 +34,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
+#include "codesign.h"
+#include "commpage.h"
+#include "fs/device.h"
 #include "handler.h"
 #include "osfmk/task.h"
 #include "process.h"
@@ -44,8 +48,10 @@
 
 #define PROC_INFO_CALL_LISTPIDS        0x1
 #define PROC_INFO_CALL_PIDINFO         0x2
+#define PROC_INFO_CALL_PIDFDINFO       0x3
 #define PROC_INFO_CALL_SETCONTROL      0x5
 #define PROC_INFO_CALL_DIRTYCONTROL    0x8
+#define PROC_INFO_CALL_PIDRUSAGE       0x9
 #define PROC_INFO_CALL_SET_DYLD_IMAGES 0xf
 
 #define PROC_SELFSET_THREADNAME 2
@@ -55,9 +61,11 @@
 #define PROC_RUID_ONLY 5
 #define PROC_PPID_ONLY 6
 
+#define PROC_PIDLISTFDS            1
 #define PROC_PIDTBSDINFO           3
 #define PROC_PIDT_SHORTBSDINFO     13
 #define PROC_PIDUNIQIDENTIFIERINFO 17
+#define PROC_PIDT_BSDINFOWITHUNIQID 18
 #define PROC_PIDCOALITIONINFO      20
 
 #define SRUN           2
@@ -114,6 +122,11 @@ struct proc_bsdinfo {
 	uint64_t pbi_start_tvusec;
 };
 
+struct proc_bsdinfowithuniqid {
+	struct proc_bsdinfo pbsd;
+	struct proc_uniqidentifierinfo p_uniqidentifier;
+};
+
 struct proc_taskinfo {
 	uint64_t pti_virtual_size;
 	uint64_t pti_resident_size;
@@ -150,8 +163,15 @@ struct proc_taskallinfo {
 
 static int pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer,
 		int32_t buffersize);
+static void uniqidentifierinfo(const struct process *process,
+		struct proc_uniqidentifierinfo *info);
 static void bsdinfo(const struct process *process, struct proc_bsdinfo *info);
-static void taskinfo(struct proc_taskinfo *info);
+static int listfds(int32_t pid, void *buffer, int32_t buffersize);
+static int fdinfo(int32_t pid, uint32_t flavor, int32_t fd, void *buffer,
+		int32_t buffersize);
+static void taskinfo(const struct process *process, struct proc_taskinfo *info);
+static int pidrusage(int32_t pid, uint32_t flavor, user_addr_t buffer);
+static uint64_t nanoseconds_to_absolute(uint64_t nanoseconds);
 static int setcontrol(uint32_t flavor, user_addr_t buffer, int32_t buffersize);
 static int listpids(uint32_t type, uint32_t typeinfo, user_addr_t buffer,
 		int32_t buffersize);
@@ -172,6 +192,11 @@ sys_proc_info(int32_t callnum, int32_t pid, uint32_t flavor, uint64_t arg,
 		return listpids(pid, flavor, buffer, buffersize);
 	case PROC_INFO_CALL_PIDINFO:
 		return pidinfo(pid, flavor, buffer, buffersize);
+	case PROC_INFO_CALL_PIDFDINFO:
+		return fdinfo(pid, flavor, (int32_t)arg, (void *)buffer,
+				buffersize);
+	case PROC_INFO_CALL_PIDRUSAGE:
+		return pidrusage(pid, flavor, buffer);
 	case PROC_INFO_CALL_SETCONTROL:
 		return setcontrol(flavor, buffer, buffersize);
 	case PROC_INFO_CALL_SET_DYLD_IMAGES:
@@ -194,6 +219,8 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 	}
 
 	switch (flavor) {
+	case PROC_PIDLISTFDS:
+		return listfds(pid, buffer, buffersize);
 	case PROC_PIDTBSDINFO: {
 		struct proc_bsdinfo *info = buffer;
 		if (buffersize < (int32_t)sizeof(*info)) {
@@ -207,7 +234,7 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 		if (buffersize < (int32_t)sizeof(*info)) {
 			return _ENOMEM;
 		}
-		taskinfo(info);
+		taskinfo(&process, info);
 		return sizeof(*info);
 	}
 	case PROC_PIDTASKALLINFO: {
@@ -216,7 +243,7 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 			return _ENOMEM;
 		}
 		bsdinfo(&process, &info->pbsd);
-		taskinfo(&info->ptinfo);
+		taskinfo(&process, &info->ptinfo);
 		return sizeof(*info);
 	}
 	case PROC_PIDT_SHORTBSDINFO: {
@@ -244,9 +271,17 @@ pidinfo(int32_t pid, uint32_t flavor, user_addr_t buffer, int32_t buffersize)
 		if (buffersize < (int32_t)sizeof(*info)) {
 			return _ENOMEM;
 		}
-		memset(info, 0, sizeof(*info));
-		info->p_uniqueid = process.pid;
-		info->p_puniqueid = process.ppid;
+		uniqidentifierinfo(&process, info);
+		return sizeof(*info);
+	}
+	/* As sysmond reads each process, for Activity Monitor */
+	case PROC_PIDT_BSDINFOWITHUNIQID: {
+		struct proc_bsdinfowithuniqid *info = buffer;
+		if (buffersize < (int32_t)sizeof(*info)) {
+			return _ENOMEM;
+		}
+		bsdinfo(&process, &info->pbsd);
+		uniqidentifierinfo(&process, &info->p_uniqidentifier);
 		return sizeof(*info);
 	}
 	case PROC_PIDPATHINFO: {
@@ -307,13 +342,93 @@ bsdinfo(const struct process *process, struct proc_bsdinfo *info)
 }
 
 static void
-taskinfo(struct proc_taskinfo *info)
+uniqidentifierinfo(const struct process *process,
+		struct proc_uniqidentifierinfo *info)
 {
 	memset(info, 0, sizeof(*info));
-	info->pti_threadnum = 1;
+	info->p_uniqueid = process->pid;
+	info->p_puniqueid = process->ppid;
+}
+
+/* Its threads, time and memory, as Linux counts them; times are absolute */
+static void
+taskinfo(const struct process *process, struct proc_taskinfo *info)
+{
+	memset(info, 0, sizeof(*info));
+	info->pti_virtual_size = process->virtual_size;
+	info->pti_resident_size
+			= process->resident_pages * (uint64_t)getpagesize();
+	info->pti_total_user = nanoseconds_to_absolute(
+			process_ticks_to_nanoseconds(process->user_ticks));
+	info->pti_total_system = nanoseconds_to_absolute(
+			process_ticks_to_nanoseconds(process->system_ticks));
+	info->pti_threadnum = process->threads > 0 ? process->threads : 1;
 	info->pti_numrunning = 1;
 	info->pti_priority = 31;
 	info->pti_policy = POLICY_TIMESHARE;
+}
+
+/*
+ * The rusage_info of a version, as proc_pid_rusage asks, as sysmond does of
+ * each process: times, the start time and memory as Linux counts them, and
+ * disk I/O where /proc lets it be read. Every version begins as the first,
+ * and the second adds disk I/O at 144
+ */
+#define RUSAGE_INFO_V6 6
+static int
+pidrusage(int32_t pid, uint32_t flavor, user_addr_t buffer)
+{
+	static const size_t sizes[] = {96, 144, 160, 232, 296, 304, 464};
+	if (flavor > RUSAGE_INFO_V6) {
+		return _EINVAL;
+	}
+	struct process process;
+	if (process_lookup(pid, &process)) {
+		return _ESRCH;
+	}
+	uint8_t *info = buffer;
+	memset(info, 0, sizes[flavor]);
+	uint64_t fields[] = {
+		/* ri_user_time, at 16, ri_system_time */
+		nanoseconds_to_absolute(
+				process_ticks_to_nanoseconds(process.user_ticks)),
+		nanoseconds_to_absolute(process_ticks_to_nanoseconds(
+				process.system_ticks)),
+	};
+	memcpy(info + 16, fields, sizeof(fields));
+	/* ri_resident_size, at 64, and ri_phys_footprint */
+	uint64_t resident = process.resident_pages * (uint64_t)getpagesize();
+	memcpy(info + 64, &resident, sizeof(resident));
+	memcpy(info + 72, &resident, sizeof(resident));
+	/* ri_proc_start_abstime, at 80, on the same clock as mach time */
+	uint64_t start = nanoseconds_to_absolute(
+			process_ticks_to_nanoseconds(process.start_ticks));
+	memcpy(info + 80, &start, sizeof(start));
+	if (flavor >= 2) {
+		char path[64];
+		snprintf(path, sizeof(path), "/proc/%d/io", pid);
+		FILE *io = fopen(path, "r");
+		uint64_t read_bytes = 0, write_bytes = 0;
+		if (io != NULL) {
+			char line[128];
+			while (fgets(line, sizeof(line), io) != NULL) {
+				sscanf(line, "read_bytes: %lu", &read_bytes);
+				sscanf(line, "write_bytes: %lu", &write_bytes);
+			}
+			fclose(io);
+		}
+		memcpy(info + 144, &read_bytes, sizeof(read_bytes));
+		memcpy(info + 152, &write_bytes, sizeof(write_bytes));
+	}
+	return 0;
+}
+
+static uint64_t
+nanoseconds_to_absolute(uint64_t nanoseconds)
+{
+	uint32_t numer, denom;
+	commpage_timebase(&numer, &denom);
+	return (uint64_t)((unsigned __int128)nanoseconds * denom / numer);
 }
 
 static int
@@ -404,4 +519,189 @@ status_field(pid_t pid, const char *field, int index, unsigned long *value)
 	}
 	fclose(status);
 	return found;
+}
+
+static int
+listfds(int32_t pid, void *buffer, int32_t buffersize)
+{
+	enum {
+		PROX_FDTYPE_VNODE = 1,
+		PROX_FDTYPE_SOCKET = 2,
+		PROX_FDTYPE_KQUEUE = 5,
+		PROX_FDTYPE_PIPE = 6,
+	};
+	struct proc_fdinfo_entry {
+		int32_t proc_fd;
+		uint32_t proc_fdtype;
+	};
+
+	char path[64];
+	snprintf(path, sizeof(path), "/proc/%d/fd", pid);
+	DIR *dir = opendir(path);
+	if (dir == NULL) {
+		return _ESRCH;
+	}
+	struct proc_fdinfo_entry *out = buffer;
+	int32_t count = 0;
+	int32_t room = (buffer != NULL)
+			? buffersize / (int32_t)sizeof(*out)
+			: INT32_MAX;
+	struct dirent *entry;
+	while ((entry = readdir(dir)) != NULL && count < room) {
+		if (entry->d_name[0] == '.') {
+			continue;
+		}
+		if (buffer != NULL) {
+			char link[PATH_MAX];
+			snprintf(path, sizeof(path), "/proc/%d/fd/%s", pid,
+					entry->d_name);
+			ssize_t length = readlink(path, link, sizeof(link) - 1);
+			link[length > 0 ? length : 0] = '\0';
+			uint32_t type = PROX_FDTYPE_VNODE;
+			if (strncmp(link, "socket:", 7) == 0) {
+				type = PROX_FDTYPE_SOCKET;
+			} else if (strncmp(link, "pipe:", 5) == 0) {
+				type = PROX_FDTYPE_PIPE;
+			} else if (strncmp(link, "anon_inode:", 11) == 0) {
+				type = PROX_FDTYPE_KQUEUE;
+			}
+			out[count] = (struct proc_fdinfo_entry){
+					.proc_fd = atoi(entry->d_name),
+					.proc_fdtype = type,
+			};
+		}
+		count++;
+	}
+	closedir(dir);
+	if (buffer == NULL) {
+		count += 20;
+	}
+	return count * (int32_t)sizeof(*out);
+}
+
+static int
+fdinfo(int32_t pid, uint32_t flavor, int32_t fd, void *buffer,
+		int32_t buffersize)
+{
+	enum {
+		PROC_PIDFDVNODEPATHINFO = 2,
+	};
+	enum {
+		VREG = 1,
+		VDIR = 2,
+		VBLK = 3,
+		VCHR = 4,
+		VLNK = 5,
+		VSOCK = 6,
+		VFIFO = 7,
+	};
+	struct vinfo_stat {
+		uint32_t vst_dev;
+		uint16_t vst_mode;
+		uint16_t vst_nlink;
+		uint64_t vst_ino;
+		uint32_t vst_uid;
+		uint32_t vst_gid;
+		int64_t vst_atime;
+		int64_t vst_atimensec;
+		int64_t vst_mtime;
+		int64_t vst_mtimensec;
+		int64_t vst_ctime;
+		int64_t vst_ctimensec;
+		int64_t vst_birthtime;
+		int64_t vst_birthtimensec;
+		int64_t vst_size;
+		int64_t vst_blocks;
+		int32_t vst_blksize;
+		uint32_t vst_flags;
+		uint32_t vst_gen;
+		uint32_t vst_rdev;
+		int64_t vst_qspare[2];
+	};
+	struct vnode_fdinfowithpath {
+		struct {
+			uint32_t fi_openflags;
+			uint32_t fi_status;
+			int64_t fi_offset;
+			int32_t fi_type;
+			uint32_t fi_guardflags;
+		} pfi;
+		struct {
+			struct vinfo_stat vi_stat;
+			int32_t vi_type;
+			int32_t vi_pad;
+			int32_t vi_fsid[2];
+			char vip_path[1024];
+		} pvip;
+	};
+	_Static_assert(sizeof(struct vnode_fdinfowithpath) == 1200,
+			"vnode_fdinfowithpath");
+
+	if (flavor != PROC_PIDFDVNODEPATHINFO) {
+		return _ENOTSUP;
+	}
+	struct vnode_fdinfowithpath *info = buffer;
+	if (buffersize < (int32_t)sizeof(*info)) {
+		return _ENOMEM;
+	}
+	char path[64];
+	snprintf(path, sizeof(path), "/proc/%d/fd/%d", pid, fd);
+	char link[PATH_MAX];
+	ssize_t length = readlink(path, link, sizeof(link) - 1);
+	struct stat st;
+	if (length <= 0 || stat(path, &st) == -1) {
+		return _EBADF;
+	}
+	link[length] = '\0';
+	/* Only files have vnodes: a socket or a pipe has none */
+	if (link[0] != '/') {
+		return _EBADF;
+	}
+	memset(info, 0, sizeof(*info));
+	char flags_path[64];
+	snprintf(flags_path, sizeof(flags_path), "/proc/%d/fdinfo/%d", pid, fd);
+	FILE *file = fopen(flags_path, "r");
+	if (file != NULL) {
+		char line[128];
+		while (fgets(line, sizeof(line), file) != NULL) {
+			long long value;
+			unsigned int flags;
+			if (sscanf(line, "pos: %lld", &value) == 1) {
+				info->pfi.fi_offset = value;
+			} else if (sscanf(line, "flags: %o", &flags) == 1) {
+				/* FREAD and FWRITE, from O_ACCMODE */
+				info->pfi.fi_openflags = (flags & 3) + 1;
+			}
+		}
+		fclose(file);
+	}
+	info->pfi.fi_type = 1; /* PROX_FDTYPE_VNODE */
+	struct vinfo_stat *vst = &info->pvip.vi_stat;
+	vst->vst_dev = darwin_device(st.st_dev);
+	vst->vst_mode = st.st_mode;
+	vst->vst_nlink = st.st_nlink;
+	vst->vst_ino = sysroot_file_id(st.st_dev, st.st_ino);
+	vst->vst_uid = st.st_uid;
+	vst->vst_gid = st.st_gid;
+	vst->vst_atime = st.st_atim.tv_sec;
+	vst->vst_atimensec = st.st_atim.tv_nsec;
+	vst->vst_mtime = st.st_mtim.tv_sec;
+	vst->vst_mtimensec = st.st_mtim.tv_nsec;
+	vst->vst_ctime = st.st_ctim.tv_sec;
+	vst->vst_ctimensec = st.st_ctim.tv_nsec;
+	vst->vst_size = st.st_size;
+	vst->vst_blocks = st.st_blocks;
+	vst->vst_blksize = st.st_blksize;
+	vst->vst_rdev = (major(st.st_rdev) << 24) | minor(st.st_rdev);
+	info->pvip.vi_type = S_ISREG(st.st_mode) ? VREG
+			: S_ISDIR(st.st_mode)    ? VDIR
+			: S_ISBLK(st.st_mode)    ? VBLK
+			: S_ISCHR(st.st_mode)    ? VCHR
+			: S_ISLNK(st.st_mode)    ? VLNK
+			: S_ISSOCK(st.st_mode)   ? VSOCK
+						 : VFIFO;
+	info->pvip.vi_fsid[0] = (int32_t)vst->vst_dev;
+	snprintf(info->pvip.vip_path, sizeof(info->pvip.vip_path), "%s",
+			sysroot_guest_path(link));
+	return sizeof(*info);
 }
